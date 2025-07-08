@@ -1,9 +1,9 @@
 {
   "bot": {
-    "mode": "public",
+    "mode": "self",
     "prefix": ".",
-    "owner": "6282263096788",
-    "botNumber": "6289681008411"
+    "owner": "6289688206739",
+    "botNumber": "6289688206739"
   },
   "skipError": {
     "enabled": true
@@ -12,8 +12,8 @@
     "packname": "WilyKun Bot",
     "author": "© WilyKun"
   },
-  "backupTarget": "6282263096788",
-  "rvov2Target": "6282263096788",
+  "backupTarget": "6289688206739",
+  "rvov2Target": "6289688206739",
   "display": {
     "showStats": true,
     "coloredOutput": true
