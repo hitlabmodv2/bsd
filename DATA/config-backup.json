@@ -1,0 +1,58 @@
+{
+  "OWNER": [
+    "6289681008411",
+    "6282263096788",
+    "6289688206739"
+  ],
+  "SELF": false,
+  "mode": "public",
+  "packName": "Sticker Dibuat Oleh : Wily",
+  "packPublish": "BangWily",
+  "SESSION_NAME": "sesi",
+  "WELCOME_ENABLED": false,
+  "WELCOME_ALL_GROUPS": false,
+  "GOODBYE_ENABLED": false,
+  "GOODBYE_ALL_GROUPS": false,
+  "reaction": {
+    "enabled": true,
+    "mode": "on",
+    "delay": "random",
+    "emojiSettings": {
+      "activeCategory": "ANIMALS_NATURE.json",
+      "categoryName": "Animals & Nature",
+      "emojiCount": 153,
+      "lastUpdated": "26/7/2025, 15.27.41"
+    }
+  },
+  "autoOnline": {
+    "enabled": true,
+    "interval": 1000
+  },
+  "autoTyping": {
+    "enabled": false,
+    "delay": 10
+  },
+  "autoRecord": {
+    "enabled": true,
+    "delay": 10
+  },
+  "autoClearSesi": {
+    "enabled": false,
+    "interval": 1
+  },
+  "LEVEL_SYSTEM": true,
+  "AUTO_BIO": false,
+  "listchat": {
+    "enabled": false,
+    "mode": "all",
+    "groups": [],
+    "activatedAt": "2025-07-28T08:45:50.365Z",
+    "activatedBy": "6282263096788",
+    "deactivatedAt": "2025-07-28T09:07:09.703Z",
+    "deactivatedBy": "6282263096788"
+  },
+  "notifGroupChange": {
+    "enabled": true,
+    "mode": "on"
+  }
+}

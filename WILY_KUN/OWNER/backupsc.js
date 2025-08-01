@@ -1,7 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-const archiver = require('archiver');
-const { Wily } = require('../../CODE_REPLAY/reply');
+import fs from 'fs';
+import path from 'path';
+import archiver from 'archiver';
+import { Wily } from '../../CODE_REPLY/reply.js';
 
 // Load config function
 function loadConfig() {
@@ -19,84 +19,172 @@ function loadConfig() {
 
 // Check access permission based on bot mode
 function checkAccess(senderNumber, config, fromMe = false) {
-    if (!config || !config.bot) return false;
+    if (!config) return false;
 
-    const botMode = config.bot.mode || 'self';
-    const ownerNumber = config.bot.owner || '';
-    const botNumber = config.bot.botNumber || '';
+    const botMode = config.mode || 'self';
+    const ownerNumbers = config.OWNER || [];
 
     // Remove @s.whatsapp.net if present
     const cleanSender = senderNumber.replace('@s.whatsapp.net', '');
-    const cleanOwner = ownerNumber.replace('@s.whatsapp.net', '');
-    const cleanBot = botNumber.replace('@s.whatsapp.net', '');
 
     if (botMode === 'self') {
-        // Only owner and bot number can use, plus fromMe
-        return fromMe || cleanSender === cleanOwner || cleanSender === cleanBot;
+        // Only owner and fromMe can use
+        return fromMe || ownerNumbers.includes(cleanSender);
     } else if (botMode === 'public') {
-        // Everyone can use
+        // Only owner can use this command even in public mode
+        return ownerNumbers.includes(cleanSender);
+    }
+
+    return false;
+}
+
+// Function to check if path should be excluded
+function shouldExclude(itemPath, stat) {
+    const basename = path.basename(itemPath);
+
+    // Exclude hidden files and folders (starts with .)
+    if (basename.startsWith('.')) {
+        return true;
+    }
+
+    // Exclude sesi folder and its contents
+    if (itemPath === 'sesi' || itemPath.startsWith('sesi/')) {
+        return true;
+    }
+
+    // Exclude backup folders
+    if (itemPath === 'DATA/BACKUPSC' || itemPath.startsWith('DATA/BACKUPSC/')) {
+        return true;
+    }
+
+    if (itemPath === 'DATA/BACKUPSESI' || itemPath.startsWith('DATA/BACKUPSESI/')) {
+        return true;
+    }
+
+    // Exclude node_modules
+    if (itemPath === 'node_modules' || itemPath.startsWith('node_modules/')) {
+        return true;
+    }
+
+    // Exclude temp folder
+    if (itemPath === 'temp' || itemPath.startsWith('temp/')) {
+        return true;
+    }
+
+    // Exclude package-lock.json
+    if (basename === 'package-lock.json') {
         return true;
     }
 
     return false;
 }
 
-// Create ZIP backup of source code - OPTIMIZED VERSION
+// Recursive function to scan and add files/folders to archive
+function scanAndAddToArchive(archive, dirPath, basePath = '') {
+    const items = fs.readdirSync(dirPath);
+    let includedCount = 0;
+    let excludedCount = 0;
+    const includedItems = [];
+    const excludedItems = [];
+
+    items.forEach(item => {
+        const fullPath = path.join(dirPath, item);
+        const relativePath = basePath ? path.join(basePath, item) : item;
+        const stat = fs.statSync(fullPath);
+
+        // Check if should be excluded
+        if (shouldExclude(relativePath, stat)) {
+            excludedItems.push(relativePath);
+            excludedCount++;
+            return;
+        }
+
+        if (stat.isDirectory()) {
+            // Add directory and scan its contents
+            const subResult = scanAndAddToArchive(archive, fullPath, relativePath);
+            includedCount += subResult.includedCount + 1; // +1 for the directory itself
+            excludedCount += subResult.excludedCount;
+            includedItems.push(relativePath + '/');
+            includedItems.push(...subResult.includedItems);
+            excludedItems.push(...subResult.excludedItems);
+        } else {
+            // Add file
+            archive.file(fullPath, { name: relativePath });
+            includedItems.push(relativePath);
+            includedCount++;
+        }
+    });
+
+    return {
+        includedCount,
+        excludedCount,
+        includedItems,
+        excludedItems
+    };
+}
+
+// Create ZIP backup of source code
 async function createSourceCodeZip() {
     return new Promise((resolve, reject) => {
-        const tempPath = './temp';
+        const backupPath = './DATA/BACKUPSC';
 
-        // Create temp directory if it doesn't exist
-        if (!fs.existsSync(tempPath)) {
-            fs.mkdirSync(tempPath, { recursive: true });
+        // Create backup directory if it doesn't exist
+        if (!fs.existsSync(backupPath)) {
+            fs.mkdirSync(backupPath, { recursive: true });
         }
 
         // Generate version number based on existing files
         let versionNumber = 1;
         try {
-            const existingFiles = fs.readdirSync(tempPath).filter(file => 
-                file.startsWith('Auto_Read_Story_V') && file.endsWith('.zip')
+            const existingFiles = fs.readdirSync(backupPath).filter(file => 
+                file.startsWith('V') && file.includes('_BASE_REACTION_SW_WILY') && file.endsWith('.zip')
             );
 
             if (existingFiles.length > 0) {
                 const versions = existingFiles.map(file => {
-                    const match = file.match(/V(\d+)_/);
+                    const match = file.match(/V(\d+)_BASE_REACTION_SW_WILY/);
                     return match ? parseInt(match[1]) : 0;
                 });
                 versionNumber = Math.max(...versions) + 1;
             }
         } catch (error) {
-            // If can't read temp directory, just use version 1
+            // If can't read backup directory, just use version 1
         }
 
-        const now = new Date();
-        const jakartaTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jakarta"}));
-        const dateStr = jakartaTime.toLocaleDateString('id-ID').replace(/\//g, '-');
-        const timeStr = jakartaTime.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '');
-
-        const zipFileName = `Auto_Read_Story_V${versionNumber}_${dateStr}_${timeStr}.zip`;
-        const zipPath = path.join(tempPath, zipFileName);
+        const zipFileName = `V${versionNumber}_BASE_REACTION_SW_WILY.zip`;
+        const zipPath = path.join(backupPath, zipFileName);
 
         const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', {
-            zlib: { level: 5 }, // Reduced compression for speed
+            zlib: { level: 5 },
             gzip: false,
-            statConcurrency: 1, // Process files one at a time
-            store: false // Don't store large files uncompressed
+            statConcurrency: 1,
+            store: false
         });
 
         // Timeout handler
         const timeout = setTimeout(() => {
             archive.abort();
             reject(new Error('Source code backup timeout - process took too long'));
-        }, 120000); // 2 minute timeout
+        }, 180000); // 3 minute timeout
+
+        let scanResult = {
+            includedCount: 0,
+            excludedCount: 0,
+            includedItems: [],
+            excludedItems: []
+        };
 
         output.on('close', () => {
             clearTimeout(timeout);
             resolve({
                 path: zipPath,
                 filename: zipFileName,
-                size: archive.pointer()
+                size: archive.pointer(),
+                includedFiles: scanResult.includedItems,
+                excludedFiles: scanResult.excludedItems,
+                includedCount: scanResult.includedCount,
+                excludedCount: scanResult.excludedCount
             });
         });
 
@@ -107,7 +195,7 @@ async function createSourceCodeZip() {
 
         archive.on('warning', (err) => {
             if (err.code === 'ENOENT') {
-                // Silent warning
+                // Silent warning for missing files
             } else {
                 clearTimeout(timeout);
                 reject(err);
@@ -116,380 +204,227 @@ async function createSourceCodeZip() {
 
         archive.pipe(output);
 
-        // Optimized file processing with priority-based inclusion
-        const priorityFiles = ['package.json', 'config.json', 'index.js', 'Wilykun.js'];
-        const priorityDirs = ['WILY_KUN', 'CODE_REPLAY', 'CODE_WARNA', 'MENU', 'EMOJI'];
+        try {
+            // Scan root directory and add all files/folders except excluded ones
+            scanResult = scanAndAddToArchive(archive, './', '');
 
-        // Skip these heavy directories entirely
-        const excludeDirs = ['node_modules', 'temp', 'sesi', '.git', 'coverage', 'dist', 'build', 'attached_assets'];
-        const allowedExtensions = ['.js', '.json', '.md'];
+            // Add root files explicitly if they're not hidden
+            const rootFiles = fs.readdirSync('./');
+            rootFiles.forEach(item => {
+                const fullPath = `./${item}`;
+                const stat = fs.statSync(fullPath);
 
-        // Optimized file processing function
-        const addToArchive = (currentPath, archivePath = '', depth = 0) => {
-            // Limit recursion depth to prevent deep scanning
-            if (depth > 10) return;
-
-            try {
-                const items = fs.readdirSync(currentPath);
-
-                // Process priority files first
-                items.forEach(item => {
-                    if (priorityFiles.includes(item)) {
-                        const fullPath = path.join(currentPath, item);
-                        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-                            archive.file(fullPath, { name: archivePath ? path.join(archivePath, item) : item });
-                        }
+                if (stat.isFile() && !shouldExclude(item, stat)) {
+                    // Only add if not already added by scanAndAddToArchive
+                    if (!scanResult.includedItems.includes(item)) {
+                        archive.file(fullPath, { name: item });
+                        scanResult.includedItems.push(item);
+                        scanResult.includedCount++;
                     }
-                });
+                }
+            });
 
-                // Process directories and other files
-                items.forEach(item => {
-                    // Skip if already processed as priority file
-                    if (priorityFiles.includes(item)) return;
-
-                    const fullPath = path.join(currentPath, item);
-                    const relativePath = archivePath ? path.join(archivePath, item) : item;
-
-                    // Skip excluded directories
-                    if (excludeDirs.includes(item)) return;
-
-                    // Skip hidden files and temporary files
-                    if (item.startsWith('.') || item.includes('~') || 
-                        item.endsWith('.bak') || item.endsWith('.tmp') ||
-                        item.endsWith('.log') || item.endsWith('.backup')) return;
-
-                    try {
-                        const stats = fs.statSync(fullPath);
-
-                        if (stats.isDirectory()) {
-                            // Only process priority directories or limit depth
-                            if (priorityDirs.includes(item) || depth < 3) {
-                                addToArchive(fullPath, relativePath, depth + 1);
-                            }
-                        } else {
-                            // Only include essential file types
-                            const ext = path.extname(item).toLowerCase();
-                            if (allowedExtensions.includes(ext) && stats.size < 5 * 1024 * 1024) { // Max 5MB per file
-                                archive.file(fullPath, { name: relativePath });
-                            }
-                        }
-                    } catch (error) {
-                        // Skip files that can't be accessed
-                    }
-                });
-            } catch (error) {
-                // Skip directories that can't be read
-            }
-        };
-
-        // Start the optimized archiving process
-        addToArchive('./');
-
-        // Finalize with progress tracking
-        setTimeout(() => {
             archive.finalize();
-        }, 100); // Small delay to ensure all files are queued
+        } catch (error) {
+            clearTimeout(timeout);
+            reject(error);
+        }
     });
 }
 
-// Get source code statistics
-function getSourceCodeStats() {
-    let totalFiles = 0;
-    let totalFolders = 0;
-    let totalSize = 0;
-    const fileTypes = {};
+// Send backup to all owners
+async function sendBackupToOwners(sock, zipInfo, config) {
+    const owners = config.OWNER || [];
+    const results = [];
 
-    const excludeDirs = ['node_modules', 'temp', 'sesi', '.git', 'coverage', 'dist', 'build', 'attached_assets'];
-    const allowedExtensions = ['.js', '.json', '.md', '.txt', '.html', '.css', '.py', '.php', '.java', '.cpp', '.c', '.h'];
-    const importantFiles = ['README', 'LICENSE', 'CHANGELOG', 'package.json', 'config.json'];
+    for (const ownerNumber of owners) {
+        try {
+            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
 
-    const countFiles = (dirPath, relativePath = '') => {
-        if (!fs.existsSync(dirPath)) return;
+            // Send document only with detailed caption
+            await sock.sendMessage(ownerJid, {
+                document: fs.readFileSync(zipInfo.path),
+                fileName: zipInfo.filename,
+                mimetype: 'application/zip',
+                caption: `🔒 *SOURCE CODE BACKUP*\n\n📦 *File Info:*\n• Nama: ${zipInfo.filename}\n• Path: DATA/BACKUPSC/${zipInfo.filename}\n• Size: ${(zipInfo.size / 1024 / 1024).toFixed(2)} MB\n• File Terbackup: ${zipInfo.includedCount}\n• File Dikecualikan: ${zipInfo.excludedCount}\n\n⏰ Dibuat: ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}\n🚀 WilyKun Bot Backup System\n\n✅ Auto-detect semua file & folder baru\n🚫 Dikecualikan: file tersembunyi, folder sesi, folder backup\n\n💾 Backup berhasil dikirim!\n🔐 Simpan file ini dengan aman\n\n🤖 WilyKun Backup System v2.0`
+            });
 
-        const items = fs.readdirSync(dirPath);
+            results.push({ owner: ownerNumber, status: 'success' });
+        } catch (error) {
+            results.push({ owner: ownerNumber, status: 'failed', error: error.message });
+        }
+    }
 
-        items.forEach(item => {
-            const fullPath = path.join(dirPath, item);
-            const itemRelativePath = relativePath ? path.join(relativePath, item) : item;
+    return results;
+}
 
+// Main backup command handler
+async function handleBackupSourceCodeCommand(m, { hisoka, text, command }) {
+    try {
+        const config = loadConfig();
+
+        if (!config) {
+            await Wily('❌ Config file not found', m, hisoka);
+            return;
+        }
+
+        // Extract sender number
+        let senderNumber = '';
+        const isFromMe = m.key?.fromMe === true;
+
+        if (isFromMe) {
+            // Get bot number from creds.json
             try {
-                const stats = fs.statSync(fullPath);
-
-                if (stats.isDirectory()) {
-                    // Skip excluded directories
-                    if (!excludeDirs.includes(item) && !item.startsWith('.')) {
-                        totalFolders++;
-                        countFiles(fullPath, itemRelativePath);
-                    }
-                } else {
-                    // Skip hidden files except allowed ones
-                    if (item.startsWith('.')) {
-                        const allowedHiddenFiles = ['.gitignore', '.gitkeep'];
-                        if (!allowedHiddenFiles.includes(item)) return;
-                    }
-
-                    // Skip temporary and backup files
-                    if (item.endsWith('.bak') || item.endsWith('.backup') || 
-                        item.endsWith('.old') || item.endsWith('.orig') ||
-                        item.includes('~') || item.startsWith('#')) {
-                        return;
-                    }
-
-                    // Only count important files
-                    const ext = path.extname(item).toLowerCase();
-                    if (allowedExtensions.includes(ext) || 
-                        importantFiles.some(name => item.toLowerCase().includes(name.toLowerCase()))) {
-                        totalFiles++;
-                        totalSize += stats.size;
-
-                        const fileExt = ext || 'no-ext';
-                        fileTypes[fileExt] = (fileTypes[fileExt] || 0) + 1;
+                if (fs.existsSync('./sesi/creds.json')) {
+                    const creds = JSON.parse(fs.readFileSync('./sesi/creds.json', 'utf8'));
+                    if (creds.me?.id) {
+                        senderNumber = creds.me.id.split(':')[0];
                     }
                 }
             } catch (error) {
-                // Skip files that can't be accessed
+                senderNumber = config.OWNER[0] || "6289681008411";
             }
-        });
-    };
-
-    countFiles('./');
-
-    return {
-        totalFiles,
-        totalFolders,
-        totalSize,
-        fileTypes
-    };
-}
-
-async function sendSourceCodeBackup(client, msg) {
-    try {
-        const config = loadConfig();
-        if (!config) return;
-
-        // Get sender number
-        const senderNumber = msg.key.participant || msg.key.remoteJid;
-        const cleanSender = senderNumber.replace('@s.whatsapp.net', '');
-        const fromMe = msg.key.fromMe || false;
+        } else {
+            if (m.sender) {
+                senderNumber = m.sender.split('@')[0];
+            } else if (m.key?.participant) {
+                senderNumber = m.key.participant.split('@')[0];
+            } else if (m.key?.remoteJid && !m.key.remoteJid.includes('@g.us')) {
+                senderNumber = m.key.remoteJid.split('@')[0];
+            }
+        }
 
         // Check access permission
-        if (!checkAccess(senderNumber, config, fromMe)) {
-            return; // Silent return for unauthorized users
+        if (!checkAccess(senderNumber, config, isFromMe)) {
+            // Jika mode public, beri respon untuk non-owner
+            if (config.mode === 'public' && !isFromMe) {
+                await Wily('🚫 *Maaf, fitur ini khusus untuk Owner Bot*\n\n💡 Hanya Owner yang dapat menggunakan fitur backup source code\n\n🔒 Akses terbatas untuk menjaga keamanan bot\n\n✨ Terima kasih atas pengertiannya!', m, hisoka);
+            }
+            return;
         }
 
-        // Send processing message first using Wily
-        const processingMsg = `╭━━━『 🔄 MEMPROSES BACKUP SOURCE CODE 』━━━❀
-┃ 
-┃ ⏳ *Sedang Membuat Backup ZIP...*
-┃ 
-┃ 🔧 *Proses OPTIMIZED:*
-┃ ▫️ Scanning priority files... 📂
-┃ ▫️ Kompresi level 5 (balanced) 🗜️
-┃ ▫️ Filter ekstensi (.js/.json/.md) ⚡
-┃ ▫️ Skip folder berat (node_modules) 🚀
-┃ ▫️ Limit file size max 5MB 📏
-┃ 
-┃ ⚡ *Estimasi: 60-120 detik*
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
+        await Wily('🔄 *STARTING SOURCE CODE BACKUP*\n\n⏳ Scanning all files and folders...\n📦 Auto-detecting new files/folders\n🚫 Excluding: hidden files, sesi folder\n⏱️ This may take a moment', m, hisoka);
 
-        await Wily(processingMsg, msg, client);
-
-        // Target number for backup - using same config as Backupsesi.js
-        const targetNumber = config.backupTarget || config.bot.owner || '6289688206739';
-        const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
-
-        // Get source code statistics
-        const sourceStats = getSourceCodeStats();
-
-        // Create ZIP backup
+        // Create backup zip
         const zipInfo = await createSourceCodeZip();
 
-        // Get current time info
-        const now = new Date();
-        const jakartaTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jakarta"}));
+        // Send to all owners
+        const sendResults = await sendBackupToOwners(hisoka, zipInfo, config);
 
-        const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-        const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 
-                           'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+        // Generate results message
+        const successCount = sendResults.filter(r => r.status === 'success').length;
+        const failedCount = sendResults.filter(r => r.status === 'failed').length;
+        const totalOwners = config.OWNER.length;
 
-        const dayName = dayNames[jakartaTime.getDay()];
-        const date = jakartaTime.getDate();
-        const monthName = monthNames[jakartaTime.getMonth()];
-        const year = jakartaTime.getFullYear();
-        const time = jakartaTime.toLocaleTimeString('id-ID', { 
-            hour: '2-digit', 
-            minute: '2-digit',
-            timeZone: 'Asia/Jakarta' 
-        });
+        // Create detailed file lists with better organization
+        const includedCount = zipInfo.includedCount;
+        const excludedCount = zipInfo.excludedCount;
 
-        // Sensor number function
-        function sensorNumber(number) {
-            const clean = number.replace('@s.whatsapp.net', '');
-            if (clean.length < 6) return clean;
-            const start = clean.substring(0, 6);
-            const end = clean.substring(clean.length - 3);
-            return `${start}***${end}`;
-        }
+        // Organize files by folders for better display
+        const organizedFiles = {};
+        const rootFiles = [];
 
-        // Format file size
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        // Caption for the ZIP file (without filename display)
-        const zipCaption = `╭━━━『 📦 WhatsApp Bot Source Code Backup 』━━━❀
-┃ 
-┃ 🤖 *Bot Source Code ZIP Backup*
-┃ 
-┃ 📅 *Backup Info*
-┃ ▫️ Tanggal: ${dayName}, ${date} ${monthName} ${year}
-┃ ▫️ Waktu: ${time} WIB 🇮🇩
-┃ ▫️ Size: ${formatFileSize(zipInfo.size)}
-┃ 
-┃ 📊 *Contents*
-┃ ▫️ Source Files: ${sourceStats.totalFiles} files
-┃ ▫️ Source Folders: ${sourceStats.totalFolders} folders
-┃ ▫️ Config File: ✅ Included
-┃ ▫️ Total Data: ${formatFileSize(sourceStats.totalSize)}
-┃ ▫️ Compression: Maximum Level
-┃ 
-┃ 🔐 *Security*
-┃ ▫️ Requester: ${sensorNumber(cleanSender)}
-┃ ▫️ Bot Mode: ${config.bot.mode.toUpperCase()}
-┃ ▫️ Bot Number: ${sensorNumber(config.bot.botNumber)}
-┃ ▫️ Authorization: ✅ Verified
-┃ ▫️ From Me: ${fromMe ? '✅ Yes' : '❌ No'}
-┃ 
-┃ ⚠️  *PENTING:*
-┃ ▫️ File ini berisi source code bot
-┃ ▫️ Simpan dengan aman dan jangan bagikan
-┃ ▫️ Gunakan untuk backup/restore
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-🔒 *Backup Source Code ZIP - Handle with Care!*`;
-
-        // Send ZIP file
-        await client.sendMessage(targetJid, {
-            document: fs.readFileSync(zipInfo.path),
-            fileName: zipInfo.filename,
-            mimetype: 'application/zip',
-            caption: zipCaption
-        });
-
-        // Create success message using Wily
-        const successMessage = `╭━━━『 📦 SOURCE CODE BACKUP BERHASIL 』━━━❀
-┃ 
-┃ ✅ *ZIP Source Code Berhasil Dikirim!*
-┃ 
-┃ 📅 *Informasi Waktu*
-┃ ▫️ Tanggal: ${dayName}, ${date} ${monthName} ${year}
-┃ ▫️ Waktu: ${time} WIB 🇮🇩
-┃ ▫️ Timezone: Asia/Jakarta
-┃ 
-┃ 🤖 *Status Bot*
-┃ ▫️ Mode: ${config.bot.mode.toUpperCase()} ${config.bot.mode === 'self' ? '🔒' : '🌐'}
-┃ ▫️ Prefix: ${config.bot.prefix}
-┃ ▫️ Owner: ${sensorNumber(config.bot.owner)}
-┃ ▫️ Bot Number: ${sensorNumber(config.bot.botNumber)}
-┃ ▫️ Status: Online ✅
-┃ 
-┃ 📊 *Statistik Source Code*
-┃ ▫️ Total File: ${sourceStats.totalFiles} files
-┃ ▫️ Total Folder: ${sourceStats.totalFolders} folders
-┃ ▫️ Total Size: ${formatFileSize(sourceStats.totalSize)}
-┃ ▫️ JavaScript Files: ${sourceStats.fileTypes['.js'] || 0}
-┃ ▫️ JSON Files: ${sourceStats.fileTypes['.json'] || 0}
-┃ ▫️ Markdown Files: ${sourceStats.fileTypes['.md'] || 0}
-┃ 
-┃ 📦 *Detail ZIP Backup*
-┃ ▫️ ZIP Size: ${formatFileSize(zipInfo.size)}
-┃ ▫️ Compression: ✅ Maximum Level
-┃ ▫️ Contents: Complete Source Code
-┃ 
-┃ 📤 *Target Backup*
-┃ ▫️ Tujuan: ${sensorNumber(targetNumber)}
-┃ ▫️ Status: Terkirim ✅
-┃ ▫️ Format: ZIP Archive
-┃ 
-┃ 🔐 *Akses Control*
-┃ ▫️ Requester: ${sensorNumber(cleanSender)}
-┃ ▫️ Mode: ${config.bot.mode} ${config.bot.mode === 'self' ? '(Terbatas 🔒)' : '(Publik 🌐)'}
-┃ ▫️ Authorization: ✅ Verified
-┃ ▫️ From Me: ${fromMe ? '✅ Yes' : '❌ No'}
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-🚀 *ZIP source code berhasil dikirim ke ${sensorNumber(targetNumber)}!*`;
-
-        // Send confirmation to requester using Wily
-        await Wily(successMessage, msg, client);
-
-        // Clean up temporary ZIP file
-        setTimeout(() => {
-            try {
-                if (fs.existsSync(zipInfo.path)) {
-                    fs.unlinkSync(zipInfo.path);
+        zipInfo.includedFiles.forEach(file => {
+            if (file.includes('/')) {
+                const parts = file.split('/');
+                const folder = parts[0];
+                if (!organizedFiles[folder]) {
+                    organizedFiles[folder] = [];
                 }
-            } catch (e) {
-                // Silent cleanup error
+                if (parts.length > 1 && parts[1]) {
+                    organizedFiles[folder].push(parts.slice(1).join('/'));
+                }
+            } else {
+                rootFiles.push(file);
             }
-        }, 5000); // Delete after 5 seconds
+        });
+
+        let resultMessage = `✅ *BACKUP SELESAI*\n\n`;
+        resultMessage += `📦 *File Info:*\n`;
+        resultMessage += `• Nama: ${zipInfo.filename}\n`;
+        resultMessage += `• Path: DATA/BACKUPSC/${zipInfo.filename}\n`;
+        resultMessage += `• Size: ${(zipInfo.size / 1024 / 1024).toFixed(2)} MB\n`;
+        resultMessage += `• Total File Terbackup: ${includedCount}\n`;
+        resultMessage += `• Total File Dikecualikan: ${excludedCount}\n\n`;
+
+        resultMessage += `📋 *File/Folder Terbackup:*\n`;
+
+        // Display root files first
+        if (rootFiles.length > 0) {
+            resultMessage += `📄 *Root Files (${rootFiles.length}):*\n`;
+            rootFiles.slice(0, 5).forEach(file => {
+                const emoji = file.endsWith('.js') ? '📄' : file.endsWith('.json') ? '⚙️' : file.endsWith('.md') ? '📝' : '📄';
+                resultMessage += `${emoji} ${file}\n`;
+            });
+            if (rootFiles.length > 5) {
+                resultMessage += `... dan ${rootFiles.length - 5} file lainnya\n`;
+            }
+            resultMessage += '\n';
+        }
+
+        // Display folders with file counts
+        const folderEntries = Object.entries(organizedFiles).slice(0, 8);
+        folderEntries.forEach(([folder, files]) => {
+            const folderEmoji = folder === 'WILY_KUN' ? '🤖' : 
+                              folder === 'DATA' ? '💾' : 
+                              folder === 'lib' ? '📚' : 
+                              folder === 'CODE_REPLY' ? '💬' : 
+                              folder === 'MENU' ? '📋' : '📁';
+            resultMessage += `${folderEmoji} *${folder}/* (${files.length} items)\n`;
+
+            // Show first few files in folder
+            files.slice(0, 3).forEach(file => {
+                const fileEmoji = file.endsWith('.js') ? '📄' : 
+                                file.endsWith('.json') ? '⚙️' : 
+                                file.includes('/') ? '📁' : '📄';
+                resultMessage += `  ${fileEmoji} ${file}\n`;
+            });
+            if (files.length > 3) {
+                resultMessage += `  ... dan ${files.length - 3} item lainnya\n`;
+            }
+        });
+
+        if (Object.keys(organizedFiles).length > 8) {
+            resultMessage += `... dan ${Object.keys(organizedFiles).length - 8} folder lainnya\n`;
+        }
+
+        resultMessage += `\n🚫 *File/Folder Dikecualikan:*\n`;
+        zipInfo.excludedFiles.slice(0, 10).forEach(file => {
+            const emoji = file.startsWith('.') ? '🔒' : 
+                         file === 'node_modules' ? '📦' : 
+                         file === 'sesi' ? '🔐' : 
+                         file === 'temp' ? '🗂️' : 
+                         file.endsWith('.json') ? '⚙️' : '❌';
+            resultMessage += `${emoji} ${file}\n`;
+        });
+        if (excludedCount > 10) {
+            resultMessage += `... dan ${excludedCount - 10} item lainnya\n`;
+        }
+
+        resultMessage += `\n📤 *Pengiriman:*\n`;
+        resultMessage += `👥 Total Owner: ${totalOwners}\n`;
+        resultMessage += `✅ Berhasil: ${successCount}\n`;
+
+        if (failedCount > 0) {
+            resultMessage += `❌ Gagal: ${failedCount}\n`;
+        }
+
+        resultMessage += `\n🔍 *Auto-Detection:*\n`;
+        resultMessage += `✅ Semua file & folder baru terdeteksi\n`;
+        resultMessage += `🚫 File tersembunyi (.) diabaikan\n`;
+        resultMessage += `🚫 Folder sesi diabaikan\n`;
+        resultMessage += `🚫 Folder backup (BACKUPSC/BACKUPSESI) diabaikan\n`;
+        resultMessage += `📁 Struktur folder dipertahankan\n`;
+
+        resultMessage += `\n⏰ ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}`;
+        resultMessage += `\n🚀 WilyKun Backup System v2.0`;
+
+        await Wily(resultMessage, m, hisoka);
 
     } catch (error) {
-        const errorMessage = `╭━━━『 ❌ BACKUP SOURCE CODE GAGAL 』━━━❀
-┃ 
-┃ ❌ *Terjadi Kesalahan!*
-┃ 
-┃ 🔍 *Detail Error:*
-┃ ▫️ ${error.message || 'Unknown error'}
-┃ 
-┃ 💡 *Solusi:*
-┃ ▫️ Periksa folder source code
-┃ ▫️ Pastikan ada ruang disk
-┃ ▫️ Coba lagi dalam beberapa saat
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
-
-        try {
-            await Wily(errorMessage, msg, client);
-        } catch (e) {
-            // Silent error
-        }
+        await Wily(`❌ Backup failed: ${error.message}`, m, hisoka);
     }
 }
 
-function handleBackupSourceCodeCommand(client, msg) {
-    const config = loadConfig();
-    if (!config) return;
-
-    const senderNumber = msg.key.participant || msg.key.remoteJid;
-    const fromMe = msg.key.fromMe || false;
-
-    // Check access permission first
-    if (!checkAccess(senderNumber, config, fromMe)) {
-        return; // Silent return for unauthorized users
-    }
-
-    const messageText = msg.message?.conversation?.toLowerCase() || 
-                       msg.message?.extendedTextMessage?.text?.toLowerCase() || '';
-
-    // Check for backup source code commands
-    if (messageText === '.backupsc' || messageText === '.backup-sc' || messageText === '.backupsource') {
-        sendSourceCodeBackup(client, msg);
-    }
-}
-
-async function ReplyRynzz(teks, msg, sock) {
-    return await Wily(teks, msg, sock);
-}
-
-module.exports = {
-    sendSourceCodeBackup,
-    handleBackupSourceCodeCommand
-};
+export { handleBackupSourceCodeCommand };
+export const backupsc = handleBackupSourceCodeCommand;

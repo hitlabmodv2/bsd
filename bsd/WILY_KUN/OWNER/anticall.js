@@ -1,0 +1,714 @@
+
+const fs = require('fs');
+const path = require('path');
+const { Wily } = require('../../CODE_REPLAY/reply.js');
+
+// Load config function
+function loadConfig() {
+    try {
+        const configPath = path.join(process.cwd(), 'config.json');
+        if (fs.existsSync(configPath)) {
+            const configData = fs.readFileSync(configPath, 'utf8');
+            const config = JSON.parse(configData);
+
+            // Ensure anticall structure exists
+            if (!config.autoFeatures) config.autoFeatures = {};
+            if (!config.autoFeatures.anticall) {
+                config.autoFeatures.anticall = {
+                    enabled: false,
+                    replyMessage: '🚫 *PANGGILAN DITOLAK OTOMATIS*\n\n📞 Maaf, saat ini bot tidak menerima panggilan suara.\n\n💬 Silakan kirim pesan teks untuk berkomunikasi.\n\n🤖 Terima kasih atas pengertiannya!'
+                };
+            }
+
+            return config;
+        }
+        return getDefaultConfig();
+    } catch (error) {
+        return getDefaultConfig();
+    }
+}
+
+// Save config function
+function saveConfig(config) {
+    try {
+        const configPath = path.join(process.cwd(), 'config.json');
+
+        // Backup config lama jika ada
+        if (fs.existsSync(configPath)) {
+            const backupPath = path.join(process.cwd(), 'DATA', 'config.backup.json');
+            const currentConfig = fs.readFileSync(configPath, 'utf8');
+
+            // Pastikan folder DATA ada
+            const dataDir = path.join(process.cwd(), 'DATA');
+            if (!fs.existsSync(dataDir)) {
+                fs.mkdirSync(dataDir, { recursive: true });
+            }
+
+            fs.writeFileSync(backupPath, currentConfig, 'utf8');
+        }
+
+        // Simpan config baru dengan format yang rapi
+        const configString = JSON.stringify(config, null, 2);
+        fs.writeFileSync(configPath, configString, 'utf8');
+
+        // Verifikasi bahwa file tersimpan dengan benar
+        if (fs.existsSync(configPath)) {
+            const verifyConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+            // Pastikan struktur anticall tersimpan dengan benar
+            if (verifyConfig.autoFeatures && 
+                verifyConfig.autoFeatures.anticall && 
+                verifyConfig.autoFeatures.anticall.replyMessage) {
+
+                console.log('✅ Config anticall berhasil disimpan ke config.json');
+                console.log('📝 Pesan anticall:', verifyConfig.autoFeatures.anticall.replyMessage);
+                console.log('⚙️ Status anticall:', verifyConfig.autoFeatures.anticall.enabled ? 'AKTIF' : 'NONAKTIF');
+
+                return true;
+            } else {
+                console.log('❌ Error: Struktur anticall tidak tersimpan dengan benar');
+                return false;
+            }
+        }
+
+        return false;
+    } catch (error) {
+        console.error('❌ Error saving config:', error.message);
+        return false;
+    }
+}
+
+// Default config
+function getDefaultConfig() {
+    return {
+        bot: { mode: 'public', prefix: '.', owner: '', botNumber: '' },
+        autoFeatures: {
+            anticall: {
+                enabled: false,
+                mode: 'all', // 'private', 'group', 'all'
+                replyMessage: '🚫 *PANGGILAN DITOLAK OTOMATIS*\n\n📞 Maaf, saat ini bot tidak menerima panggilan suara.\n\n💬 Silakan kirim pesan teks untuk berkomunikasi.\n\n🤖 Terima kasih atas pengertiannya!',
+                whitelist: []
+            }
+        }
+    };
+}
+
+// Check access function
+function checkAccess(senderNumber, config, fromMe = false) {
+    const botMode = config?.bot?.mode || 'public';
+
+    if (botMode === 'public') {
+        // Pada mode public, hanya owner dan bot yang bisa mengatur anticall
+        const botNumber = config?.bot?.botNumber?.split('@')[0];
+        const ownerNumber = config?.bot?.owner?.split('@')[0];
+        const cleanSender = senderNumber?.split('@')[0];
+
+        return fromMe || cleanSender === botNumber || cleanSender === ownerNumber;
+    }
+
+    if (botMode === 'self') {
+        const botNumber = config?.bot?.botNumber?.split('@')[0];
+        const ownerNumber = config?.bot?.owner?.split('@')[0];
+        const cleanSender = senderNumber?.split('@')[0];
+
+        return fromMe || cleanSender === botNumber || cleanSender === ownerNumber;
+    }
+
+    return false;
+}
+
+// Handle anticall command
+async function handleAnticallCommand(sock, msg, config, args) {
+    try {
+        // Validasi akses
+        const senderNumber = msg.key.participant || msg.key.remoteJid;
+        const fromMe = msg.key.fromMe;
+
+        if (!checkAccess(senderNumber, config, fromMe)) {
+            if (config.bot?.mode === 'public') {
+                const accessDeniedText = `🚫 *AKSES DITOLAK*
+
+❌ Maaf, fitur ini khusus untuk:
+• Owner Bot
+• Bot Owner  
+• Form Me
+
+🔐 *Fitur Anti Call hanya untuk:*
+├─ Owner: ${config.bot?.owner || 'Tidak diset'}
+├─ Bot Number: ${config.bot?.botNumber || 'Tidak diset'}
+└─ Form Me: Pemilik bot
+
+💡 *Gunakan fitur lain yang tersedia:*
+• ${config.bot?.prefix || '.'}menu - Menu lengkap
+• ${config.bot?.prefix || '.'}status - Status bot
+• ${config.bot?.prefix || '.'}info - Info bot
+
+⚠️ *Anti call hanya bisa diatur oleh pemilik bot*`;
+
+                await Wily(accessDeniedText, msg, sock);
+            }
+            return;
+        }
+
+        if (args.length < 2) {
+            const helpText = `❌ *FORMAT SALAH!*
+
+📝 *DAFTAR COMMAND LENGKAP:*
+${config.bot.prefix}anticall on/off
+${config.bot.prefix}anticall setmsg <pesan baru>
+${config.bot.prefix}anticall add <nomor>
+${config.bot.prefix}anticall del <nomor>
+${config.bot.prefix}anticall list
+${config.bot.prefix}anticall status
+
+📋 *PENJELASAN FITUR ANTICALL:*
+🔸 *Fungsi Utama:* Bot akan otomatis menolak panggilan masuk
+🔸 *Target:* Hanya panggilan VOICE CALL (suara)
+🔸 *Scope:* Berlaku HANYA untuk chat PRIVATE/DM
+🔸 *Group Call:* TIDAK akan ditolak (tetap bisa terima)
+🔸 *Video Call:* TIDAK terpengaruh (hanya voice call)
+🔸 *Auto Reply:* Kirim pesan otomatis setelah tolak panggilan
+🔸 *Whitelist:* Nomor tertentu bisa dikecualikan
+
+📖 *PENJELASAN DETAIL COMMAND:*
+• \`on\` - Aktifkan fitur anticall
+• \`off\` - Matikan fitur anticall  
+• \`setmsg\` - Ubah pesan balasan otomatis
+• \`add\` - Tambah nomor ke whitelist (tidak ditolak)
+• \`del\` - Hapus nomor dari whitelist
+• \`list\` - Lihat daftar nomor whitelist
+• \`status\` - Cek status lengkap anticall
+
+⚙️ *STATUS SAAT INI:*
+├─ Status: ${config.autoFeatures?.anticall?.enabled ? 'ON ✅' : 'OFF ❌'}
+├─ Mode: Private Only (Chat DM saja)
+├─ Pesan: ${config.autoFeatures?.anticall?.replyMessage ? 'Custom tersimpan' : 'Default'}
+└─ Whitelist: ${config.autoFeatures?.anticall?.whitelist?.length || 0} nomor terdaftar
+
+💡 *CONTOH PENGGUNAAN:*
+${config.bot.prefix}anticall on
+${config.bot.prefix}anticall setmsg Maaf bot sedang sibuk, silakan chat saja
+${config.bot.prefix}anticall add 6289xxxxxxxx
+${config.bot.prefix}anticall add +62 822-6309-6788
+
+⚠️ *PENTING DIKETAHUI:*
+• Hanya menolak panggilan VOICE di chat PRIVATE
+• Video call TIDAK akan ditolak otomatis
+• Panggilan di GROUP TIDAK terpengaruh
+• Nomor di whitelist tetap bisa nelpon normal
+• Bot akan kirim pesan otomatis setelah tolak panggilan`;
+
+            await Wily(helpText, msg, sock);
+            return;
+        }
+
+        const action = args[1].toLowerCase();
+
+        // Pastikan autoFeatures dan anticall ada
+        if (!config.autoFeatures) config.autoFeatures = {};
+        if (!config.autoFeatures.anticall) {
+            config.autoFeatures.anticall = {
+                enabled: false,
+                mode: 'private',
+                replyMessage: '🚫 *PANGGILAN DITOLAK OTOMATIS*\n\n📞 Maaf, saat ini bot tidak menerima panggilan suara.\n\n💬 Silakan kirim pesan teks untuk berkomunikasi.\n\n🤖 Terima kasih atas pengertiannya!',
+                whitelist: []
+            };
+        }
+
+        // Pastikan whitelist array ada
+        if (!config.autoFeatures.anticall.whitelist) {
+            config.autoFeatures.anticall.whitelist = [];
+        }
+
+        switch (action) {
+            case 'on':
+                if (config.autoFeatures.anticall.enabled) {
+                    await Wily('⚠️ *ANTICALL SUDAH AKTIF*\n\nFitur anticall sudah dalam keadaan ON', msg, sock);
+                    return;
+                }
+
+                config.autoFeatures.anticall.enabled = true;
+
+                if (saveConfig(config)) {
+                    const successText = `✅ *ANTICALL BERHASIL DIAKTIFKAN*
+
+🚫 *STATUS:* AKTIF ✅
+📞 *FUNGSI:* Bot akan menolak panggilan suara otomatis
+💬 *BALASAN:* Otomatis kirim pesan penolakan
+
+⚙️ *CARA KERJA ANTICALL:*
+├─ Target: VOICE CALL (panggilan suara) saja
+├─ Scope: PRIVATE CHAT/DM saja
+├─ Action: Reject + Auto Reply pesan
+├─ Video Call: TIDAK terpengaruh
+└─ Group Call: TIDAK akan ditolak
+
+🔧 *COMMAND LENGKAP TERSEDIA:*
+• ${config.bot.prefix}anticall on/off - Aktif/nonaktifkan
+• ${config.bot.prefix}anticall setmsg <pesan baru> - Ubah pesan balasan
+• ${config.bot.prefix}anticall add <nomor> - Tambah ke whitelist
+• ${config.bot.prefix}anticall del <nomor> - Hapus dari whitelist
+• ${config.bot.prefix}anticall list - Lihat daftar whitelist
+• ${config.bot.prefix}anticall status - Status lengkap
+
+📋 *WHITELIST SISTEM:*
+• Nomor di whitelist TIDAK akan auto-reject
+• Bisa panggil bot normal tanpa ditolak
+• Tetap bisa terima panggilan dari nomor whitelist
+
+⚠️ *CATATAN PENTING:* 
+• Hanya VOICE CALL di PRIVATE yang ditolak
+• VIDEO CALL tidak terpengaruh sama sekali
+• PANGGILAN GROUP tidak akan ditolak
+• Setelah tolak panggilan, bot kirim pesan otomatis`;
+
+                    await Wily(successText, msg, sock);
+                } else {
+                    await Wily('❌ *GAGAL MENYIMPAN*\n\nTerjadi error saat menyimpan pengaturan anticall', msg, sock);
+                }
+                break;
+
+            case 'off':
+                if (!config.autoFeatures.anticall.enabled) {
+                    await Wily('⚠️ *ANTICALL SUDAH NONAKTIF*\n\nFitur anticall sudah dalam keadaan OFF', msg, sock);
+                    return;
+                }
+
+                config.autoFeatures.anticall.enabled = false;
+
+                if (saveConfig(config)) {
+                    await Wily('✅ *ANTICALL DINONAKTIFKAN*\n\n❌ Status: Nonaktif\n📞 Bot sekarang tidak akan menolak panggilan\n💬 Tidak ada auto reply penolakan', msg, sock);
+                } else {
+                    await Wily('❌ *GAGAL MENYIMPAN*\n\nTerjadi error saat menyimpan pengaturan anticall', msg, sock);
+                }
+                break;
+
+
+
+            case 'add':
+                if (args.length < 3) {
+                    await Wily(`❌ *FORMAT SALAH!*\n\n📝 *Cara penggunaan:*\n${config.bot.prefix}anticall add <nomor>\n\n💡 *Contoh:*\n${config.bot.prefix}anticall add 6289xxxxxxxx\n${config.bot.prefix}anticall add +62 822-6309-6788\n\n📋 *Format yang diterima:*\n• 6289xxxxxxxx (langsung)\n• +62 xxx-xxxx-xxxx (dengan format)\n• 08xxxxxxxxxx (akan dikonversi ke 628xxx)\n\n⚠️ *Catatan:* Nomor yang ditambahkan tidak akan auto-reject`, msg, sock);
+                    return;
+                }
+
+                let inputNumber = args.slice(2).join(' ').trim();
+
+                // Normalisasi nomor
+                function normalizeNumber(num) {
+                    // Hapus semua karakter non-digit
+                    let cleanNum = num.replace(/\D/g, '');
+
+                    // Konversi 08xxx ke 628xxx
+                    if (cleanNum.startsWith('08')) {
+                        cleanNum = '628' + cleanNum.substring(2);
+                    }
+                    // Konversi 62xxx ke 628xxx jika dimulai dengan 62 tapi bukan 628
+                    else if (cleanNum.startsWith('62') && !cleanNum.startsWith('628')) {
+                        cleanNum = '628' + cleanNum.substring(2);
+                    }
+                    // Jika tidak dimulai dengan 62, tambahkan 628
+                    else if (!cleanNum.startsWith('62')) {
+                        cleanNum = '628' + cleanNum;
+                    }
+
+                    return cleanNum;
+                }
+
+                const normalizedNumber = normalizeNumber(inputNumber);
+
+                // Validasi nomor
+                if (normalizedNumber.length < 10 || normalizedNumber.length > 15) {
+                    await Wily('❌ *NOMOR TIDAK VALID*\n\nNomor harus memiliki 10-15 digit setelah dinormalisasi', msg, sock);
+                    return;
+                }
+
+                // Pastikan whitelist array exists
+                if (!config.autoFeatures.anticall.whitelist) {
+                    config.autoFeatures.anticall.whitelist = [];
+                }
+
+                // Cek apakah nomor sudah ada
+                if (config.autoFeatures.anticall.whitelist.includes(normalizedNumber)) {
+                    await Wily(`⚠️ *NOMOR SUDAH ADA*\n\n📱 Nomor: ${normalizedNumber}\n🔒 Status: Sudah di whitelist\n\n📋 Lihat daftar: ${config.bot.prefix}anticall list`, msg, sock);
+                    return;
+                }
+
+                // Tambahkan ke whitelist
+                config.autoFeatures.anticall.whitelist.push(normalizedNumber);
+
+                if (saveConfig(config)) {
+                    const successText = `✅ *NOMOR BERHASIL DITAMBAHKAN*
+
+📱 *Nomor Ditambahkan:*
+${normalizedNumber}
+
+📋 *Input Asli:*
+${inputNumber}
+
+⚙️ *Detail Whitelist:*
+├─ Total Nomor: ${config.autoFeatures.anticall.whitelist.length}
+├─ Status: Nomor tidak akan auto-reject
+├─ Berlaku: Panggilan suara private
+└─ Tersimpan: config.json ✅
+
+🔧 *Command lainnya:*
+• ${config.bot.prefix}anticall list - Lihat daftar
+• ${config.bot.prefix}anticall del <nomor> - Hapus nomor
+• ${config.bot.prefix}anticall status - Status lengkap`;
+
+                    await Wily(successText, msg, sock);
+                } else {
+                    await Wily('❌ *GAGAL MENYIMPAN*\n\nTerjadi error saat menyimpan nomor ke whitelist', msg, sock);
+                }
+                break;
+
+            case 'del':
+                if (args.length < 3) {
+                    await Wily(`❌ *FORMAT SALAH!*\n\n📝 *Cara penggunaan:*\n${config.bot.prefix}anticall del <nomor>\n\n💡 *Contoh:*\n${config.bot.prefix}anticall del 6289xxxxxxxx\n\n📋 *Atau lihat daftar:*\n${config.bot.prefix}anticall list`, msg, sock);
+                    return;
+                }
+
+                let delNumber = args.slice(2).join(' ').trim();
+                const normalizedDelNumber = normalizeNumber(delNumber);
+
+                // Pastikan whitelist exists
+                if (!config.autoFeatures.anticall.whitelist || config.autoFeatures.anticall.whitelist.length === 0) {
+                    await Wily('❌ *WHITELIST KOSONG*\n\nTidak ada nomor yang terdaftar di whitelist', msg, sock);
+                    return;
+                }
+
+                // Cek apakah nomor ada di whitelist
+                const numberIndex = config.autoFeatures.anticall.whitelist.indexOf(normalizedDelNumber);
+                if (numberIndex === -1) {
+                    await Wily(`❌ *NOMOR TIDAK DITEMUKAN*\n\n📱 Nomor: ${normalizedDelNumber}\n🔍 Status: Tidak ada di whitelist\n\n📋 Lihat daftar: ${config.bot.prefix}anticall list`, msg, sock);
+                    return;
+                }
+
+                // Hapus dari whitelist
+                config.autoFeatures.anticall.whitelist.splice(numberIndex, 1);
+
+                if (saveConfig(config)) {
+                    const successText = `✅ *NOMOR BERHASIL DIHAPUS*
+
+📱 *Nomor Dihapus:*
+${normalizedDelNumber}
+
+📋 *Input Asli:*
+${delNumber}
+
+⚙️ *Detail Whitelist:*
+├─ Total Nomor: ${config.autoFeatures.anticall.whitelist.length}
+├─ Status: Nomor akan auto-reject lagi
+├─ Berlaku: Panggilan suara private
+└─ Tersimpan: config.json ✅
+
+🔧 *Command lainnya:*
+• ${config.bot.prefix}anticall list - Lihat daftar
+• ${config.bot.prefix}anticall add <nomor> - Tambah nomor`;
+
+                    await Wily(successText, msg, sock);
+                } else {
+                    await Wily('❌ *GAGAL MENYIMPAN*\n\nTerjadi error saat menghapus nomor dari whitelist', msg, sock);
+                }
+                break;
+
+            case 'list':
+                if (!config.autoFeatures.anticall.whitelist || config.autoFeatures.anticall.whitelist.length === 0) {
+                    await Wily(`📋 *WHITELIST ANTICALL KOSONG*\n\n❌ Tidak ada nomor yang terdaftar\n\n🔧 *Tambah nomor:*\n${config.bot.prefix}anticall add <nomor>\n\n💡 *Contoh:*\n${config.bot.prefix}anticall add 6289xxxxxxxx`, msg, sock);
+                    return;
+                }
+
+                let listText = `📋 *DAFTAR WHITELIST ANTICALL*\n\n`;
+                listText += `📊 *Total Nomor:* ${config.autoFeatures.anticall.whitelist.length}\n\n`;
+                listText += `📱 *Daftar Nomor:*\n`;
+
+                config.autoFeatures.anticall.whitelist.forEach((number, index) => {
+                    listText += `${index + 1}. ${number}\n`;
+                });
+
+                listText += `\n⚙️ *Status:* Nomor di atas tidak akan auto-reject\n`;
+                listText += `🔧 *Command:*\n`;
+                listText += `• ${config.bot.prefix}anticall add <nomor> - Tambah\n`;
+                listText += `• ${config.bot.prefix}anticall del <nomor> - Hapus\n`;
+                listText += `• ${config.bot.prefix}anticall status - Status lengkap`;
+
+                await Wily(listText, msg, sock);
+                break;
+
+            case 'setmsg':
+                if (args.length < 3) {
+                    await Wily(`❌ *FORMAT SALAH!*\n\n📝 *Cara penggunaan:*\n${config.bot.prefix}anticall setmsg <pesan custom>\n\n💡 *Contoh:*\n${config.bot.prefix}anticall setmsg Maaf, tidak menerima panggilan saat ini\n\n📋 *Pesan saat ini:*\n${config.autoFeatures?.anticall?.replyMessage || 'Belum diset'}`, msg, sock);
+                    return;
+                }
+
+                const newMessage = args.slice(2).join(' ');
+
+                if (newMessage.length > 500) {
+                    await Wily('❌ *PESAN TERLALU PANJANG*\n\nMaksimal 500 karakter untuk pesan anticall', msg, sock);
+                    return;
+                }
+
+                if (newMessage.length < 10) {
+                    await Wily('❌ *PESAN TERLALU PENDEK*\n\nMinimal 10 karakter untuk pesan anticall', msg, sock);
+                    return;
+                }
+
+                // Update config
+                config.autoFeatures.anticall.replyMessage = newMessage;
+
+                if (saveConfig(config)) {
+                    // Verifikasi ulang bahwa config benar-benar tersimpan
+                    const verifyConfig = loadConfig();
+                    const savedMessage = verifyConfig.autoFeatures?.anticall?.replyMessage;
+
+                    if (savedMessage === newMessage) {
+                        const successText = `✅ *PESAN ANTICALL BERHASIL DIUBAH & TERSIMPAN*
+
+💬 *Pesan Baru:*
+${newMessage}
+
+⚙️ *Detail Pengaturan:*
+├─ Status: ${config.autoFeatures.anticall.enabled ? 'AKTIF ✅' : 'NONAKTIF ❌'}
+├─ Mode: Private Only
+├─ Karakter: ${newMessage.length}/500
+└─ Auto Reply: ${config.autoFeatures.anticall.enabled ? 'Ya ✅' : 'Tidak ❌'}
+
+✅ *KONFIRMASI PENYIMPANAN:*
+├─ File: config.json ✅
+├─ Backup: DATA/config.backup.json ✅
+├─ Verifikasi: Pesan tersimpan dengan benar ✅
+└─ Status: Siap digunakan ✅
+
+🔧 *Command lainnya:*
+• ${config.bot.prefix}anticall on/off
+• ${config.bot.prefix}anticall status`;
+
+                        await Wily(successText, msg, sock);
+                    } else {
+                        await Wily(`❌ *PESAN TERSIMPAN TAPI TIDAK SESUAI*\n\nPesan yang diinput: ${newMessage}\nPesan yang tersimpan: ${savedMessage || 'Tidak ada'}\n\nCoba lagi dengan command yang sama`, msg, sock);
+                    }
+                } else {
+                    await Wily('❌ *GAGAL MENYIMPAN CONFIG*\n\nTerjadi error saat menyimpan pesan anticall ke config.json\nSilakan cek permission file atau coba lagi', msg, sock);
+                }
+                break;
+
+            case 'status':
+                const whitelistCount = config.autoFeatures.anticall.whitelist ? config.autoFeatures.anticall.whitelist.length : 0;
+                const statusText = `📊 *STATUS ANTICALL*
+
+⚙️ *Konfigurasi Saat Ini:*
+├─ Status: ${config.autoFeatures.anticall.enabled ? 'AKTIF ✅' : 'NONAKTIF ❌'}
+├─ Mode: Private Only
+├─ Berlaku untuk: Chat Private Saja
+├─ Auto Reply: ${config.autoFeatures.anticall.enabled ? 'Ya ✅' : 'Tidak ❌'}
+└─ Whitelist: ${whitelistCount} nomor
+
+💬 *Pesan Balasan:*
+${config.autoFeatures.anticall.replyMessage}
+
+📋 *Whitelist:*
+${whitelistCount > 0 ? `• ${whitelistCount} nomor tidak akan auto-reject` : '• Tidak ada nomor di whitelist'}
+
+🔧 *COMMAND TERSEDIA:*
+• ${config.bot.prefix}anticall on/off
+• ${config.bot.prefix}anticall setmsg <pesan>
+• ${config.bot.prefix}anticall add <nomor>
+• ${config.bot.prefix}anticall del <nomor>
+• ${config.bot.prefix}anticall list
+• ${config.bot.prefix}anticall status
+
+⚠️ *CATATAN:* 
+• Hanya menolak voice call di chat private
+• Video call tidak terpengaruh
+• Panggilan group tidak akan ditolak
+• Nomor di whitelist tidak akan auto-reject`;
+
+                await Wily(statusText, msg, sock);
+                break;
+
+            default:
+                await Wily(`❌ *COMMAND TIDAK DIKENAL*\n\nGunakan: ${config.bot.prefix}anticall <on/off/setmsg/add/del/list/status>`, msg, sock);
+                break;
+        }
+
+    } catch (error) {
+        await Wily('❌ *ERROR ANTICALL*\n\nTerjadi kesalahan saat mengatur anticall', msg, sock);
+    }
+}
+
+// Tracker untuk mencegah duplikasi pesan
+const processedCalls = new Map();
+
+// Fungsi untuk normalisasi nomor
+function normalizeNumber(num) {
+    // Hapus semua karakter non-digit
+    let cleanNum = num.replace(/\D/g, '');
+
+    // Konversi 08xxx ke 628xxx
+    if (cleanNum.startsWith('08')) {
+        cleanNum = '628' + cleanNum.substring(2);
+    }
+    // Konversi 62xxx ke 628xxx jika dimulai dengan 62 tapi bukan 628
+    else if (cleanNum.startsWith('62') && !cleanNum.startsWith('628')) {
+        cleanNum = '628' + cleanNum.substring(2);
+    }
+    // Jika tidak dimulai dengan 62, tambahkan 628
+    else if (!cleanNum.startsWith('62')) {
+        cleanNum = '628' + cleanNum;
+    }
+
+    return cleanNum;
+}
+
+// Handle incoming calls - PERBAIKAN UNTUK HANYA VOICE CALL
+function setupAnticall(sock) {
+    // Register event listener untuk incoming calls
+    sock.ev.on('call', async (callData) => {
+        try {
+            // Load config fresh untuk setiap panggilan
+            const config = loadConfig();
+
+            // Skip jika anticall tidak aktif
+            if (!config.autoFeatures?.anticall?.enabled) {
+                return;
+            }
+
+            // Pastikan callData adalah array
+            const calls = Array.isArray(callData) ? callData : [callData];
+
+            // Process setiap panggilan
+            for (const call of calls) {
+                try {
+                    // Hanya tangani panggilan yang baru masuk
+                    if (call.status === 'offer' || call.status === 'ringing') {
+                        const callerId = call.from;
+                        const isGroup = callerId?.includes('@g.us') || false;
+                        const isVideoCall = call.isVideo === true;
+                        const callKey = `${call.id}_${callerId}`;
+
+                        // Skip jika panggilan dari bot sendiri
+                        if (call.isFromMe || callerId === sock.user?.id) {
+                            continue;
+                        }
+
+                        // PENTING: Skip video call, hanya proses voice call
+                        if (isVideoCall) {
+                            continue;
+                        }
+
+                        // Skip jika call sudah diproses sebelumnya
+                        if (processedCalls.has(callKey)) {
+                            continue;
+                        }
+
+                        // Tandai call sebagai sudah diproses
+                        processedCalls.set(callKey, Date.now());
+
+                        // Hanya tolak panggilan private (bukan grup)
+                        const shouldReject = !isGroup;
+
+                        // Cek apakah nomor ada di whitelist
+                        const callerNumber = callerId.split('@')[0];
+                        const isWhitelisted = config.autoFeatures?.anticall?.whitelist?.includes(callerNumber) || false;
+
+                        if (shouldReject && !isWhitelisted) {
+                            // REJECT CALL - MULTIPLE METHODS UNTUK KOMPATIBILITAS
+                            try {
+                                // Method 1: Standard rejectCall
+                                if (typeof sock.rejectCall === 'function') {
+                                    await sock.rejectCall(call.id, call.from);
+                                } 
+                                // Method 2: Alternative untuk baileys terbaru
+                                else if (typeof sock.updateCallPresence === 'function') {
+                                    await sock.updateCallPresence(call.id, 'reject');
+                                }
+                                // Method 3: Manual reject via sendNode
+                                else {
+                                    const rejectNode = {
+                                        tag: 'call',
+                                        attrs: {
+                                            to: call.from,
+                                            id: call.id
+                                        },
+                                        content: [{
+                                            tag: 'reject',
+                                            attrs: {},
+                                            content: undefined
+                                        }]
+                                    };
+
+                                    if (typeof sock.sendNode === 'function') {
+                                        await sock.sendNode(rejectNode);
+                                    }
+                                }
+                            } catch (rejectError) {
+                                // Silent fail untuk reject error
+                            }
+
+                            // AUTO REPLY MESSAGE - hanya sekali per call menggunakan format reply.js
+                            // Load fresh config untuk memastikan pesan terbaru
+                            const freshConfig = loadConfig();
+                            const replyMessage = freshConfig.autoFeatures?.anticall?.replyMessage || 
+                                '🚫 *PANGGILAN DITOLAK OTOMATIS*\n\n📞 Maaf, saat ini bot tidak menerima panggilan suara.\n\n💬 Silakan kirim pesan teks untuk berkomunikasi.\n\n🤖 Terima kasih atas pengertiannya!';
+
+                            // Kirim balasan dengan delay menggunakan format reply.js yang rapi
+                            setTimeout(async () => {
+                                try {
+                                    // Import fungsi Wily dari reply.js
+                                    const { Wily } = require('../../CODE_REPLAY/reply.js');
+
+                                    // Buat object message yang kompatibel dengan Wily function
+                                    const fakeMessage = {
+                                        key: {
+                                            remoteJid: callerId,
+                                            fromMe: false,
+                                            participant: callerId
+                                        },
+                                        message: {
+                                            conversation: 'Incoming call rejected'
+                                        }
+                                    };
+
+                                    // Kirim dengan format reply.js yang rapi
+                                    await Wily(replyMessage, fakeMessage, sock);
+                                } catch (sendError) {
+                                    // Fallback ke pesan biasa jika reply.js gagal
+                                    try {
+                                        await sock.sendMessage(callerId, {
+                                            text: replyMessage
+                                        });
+                                    } catch (fallbackError) {
+                                        // Silent fail untuk fallback error
+                                    }
+                                }
+                            }, 2000); // Delay 2 detik
+                        }
+                    }
+                } catch (callError) {
+                    // Silent fail untuk call processing error
+                }
+            }
+        } catch (error) {
+            // Silent fail untuk main handler error
+        }
+    });
+
+    // Cleanup tracker setiap 5 menit
+    setInterval(() => {
+        const now = Date.now();
+        const fiveMinutes = 5 * 60 * 1000;
+
+        for (const [key, timestamp] of processedCalls.entries()) {
+            if (now - timestamp > fiveMinutes) {
+                processedCalls.delete(key);
+            }
+        }
+    }, 5 * 60 * 1000);
+}
+
+module.exports = {
+    handleAnticallCommand,
+    setupAnticall,
+    loadConfig,
+    saveConfig
+};

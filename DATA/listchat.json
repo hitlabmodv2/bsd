@@ -1,0 +1,86 @@
+{
+  "groups": [],
+  "trackedGroups": {
+    "120363419402989015@g.us": {
+      "groupName": "",
+      "users": {
+        "6282263096788": {
+          "name": "Avvbot ( Bot Md )",
+          "count": 19,
+          "lastMessage": "2025-07-28T09:07:09.703Z"
+        },
+        "6289688206739": {
+          "name": "Wily Kun",
+          "count": 7,
+          "lastMessage": "2025-07-28T08:53:17.974Z"
+        }
+      },
+      "totalMessages": 26,
+      "lastUpdate": "2025-07-28T09:07:09.703Z",
+      "createdAt": "2025-07-28T08:32:08.035Z"
+    },
+    "120363387297385463@g.us": {
+      "groupName": "",
+      "users": {
+        "6282263096788": {
+          "name": "Avvbot ( Bot Md )",
+          "count": 7,
+          "lastMessage": "2025-07-28T08:46:55.437Z"
+        }
+      },
+      "totalMessages": 7,
+      "lastUpdate": "2025-07-28T08:46:55.437Z",
+      "createdAt": "2025-07-28T08:46:01.069Z"
+    },
+    "120363383540766761@g.us": {
+      "groupName": "",
+      "users": {
+        "6289688206739": {
+          "name": "Wily Kun",
+          "count": 26,
+          "lastMessage": "2025-07-28T09:06:08.986Z"
+        },
+        "6281393564657": {
+          "name": "γυς ρου",
+          "count": 11,
+          "lastMessage": "2025-07-28T09:02:36.449Z"
+        },
+        "6282265496001": {
+          "name": "Yozora | Enpi Shī",
+          "count": 1,
+          "lastMessage": "2025-07-28T08:57:36.403Z"
+        },
+        "23674618863": {
+          "name": "sunsend 2.0",
+          "count": 4,
+          "lastMessage": "2025-07-28T08:58:44.755Z"
+        },
+        "6282263096788": {
+          "name": "Avvbot ( Bot Md )",
+          "count": 1,
+          "lastMessage": "2025-07-28T08:59:45.875Z"
+        }
+      },
+      "totalMessages": 43,
+      "lastUpdate": "2025-07-28T09:06:08.986Z",
+      "createdAt": "2025-07-28T08:53:55.340Z"
+    }
+  },
+  "settings": {
+    "enabled": true,
+    "mode": "specific",
+    "groups": [
+      "120363419402989015@g.us"
+    ],
+    "activatedAt": "2025-07-28T08:31:45.107Z",
+    "activatedBy": "6282263096788",
+    "lastUpdate": "2025-07-28T09:07:09.703Z"
+  },
+  "120363419402989015@g.us": {
+    "groupName": "TES BOT 👏",
+    "users": {},
+    "totalMessages": 0,
+    "lastUpdate": "2025-07-28T08:32:01.315Z",
+    "createdAt": "2025-07-28T08:32:01.315Z"
+  }
+}

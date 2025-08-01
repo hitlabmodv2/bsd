@@ -1,624 +1,664 @@
-const fs = require('fs');
-const path = require('path');
-const { Wily } = require('../../CODE_REPLAY/reply');
 
-// Load config function
+import fs from 'fs';
+import path from 'path';
+import { Wily } from '../../CODE_REPLY/reply.js';
+
+// Fungsi untuk membaca nomor bot dari creds.json
+function getBotNumber() {
+    try {
+        if (fs.existsSync('./sesi/creds.json')) {
+            const creds = JSON.parse(fs.readFileSync('./sesi/creds.json', 'utf8'));
+            if (creds.me?.id) {
+                const botNumber = creds.me.id.split(':')[0];
+                return botNumber;
+            }
+        }
+        // Fallback ke config.json
+        const config = loadConfig();
+        const fallbackNumber = config.OWNER[0] || "6289681008411";
+        return fallbackNumber;
+    } catch (error) {
+        return "6289681008411"; // fallback nomor bot
+    }
+}
+
+// Fungsi untuk memuat config
 function loadConfig() {
     try {
-        // Try multiple config paths
-        const configPaths = [
-            path.join(process.cwd(), 'config.json'),
-            path.join(__dirname, '../../config.json'),
-            path.join(__dirname, '../config.json')
-        ];
-
-        for (const configPath of configPaths) {
-            if (fs.existsSync(configPath)) {
-                const configData = fs.readFileSync(configPath, 'utf8');
-                const parsedConfig = JSON.parse(configData);
-
-                // Ensure bot object exists
-                if (!parsedConfig.bot) {
-                    parsedConfig.bot = {
-                        mode: 'self',
-                        prefix: '.',
-                        owner: '',
-                        botNumber: ''
-                    };
-                }
-
-                return parsedConfig;
-            }
+        const configPath = path.join(process.cwd(), 'config.json');
+        if (fs.existsSync(configPath)) {
+            const configData = fs.readFileSync(configPath, 'utf8');
+            return JSON.parse(configData);
         }
+        return null;
     } catch (error) {
-        // Silent error handling
+        return null;
     }
-
-    // Return default config if all fail
-    return {
-        bot: {
-            mode: 'self',
-            prefix: '.',
-            owner: '',
-            botNumber: ''
-        },
-        autoFeatures: {
-            typing: false,
-            recording: false,
-            online: false,
-            antidelete: { enabled: false }
-        }
-    };
 }
 
-// Check access permission based on bot mode and user number from config.json
+// Fungsi untuk menyimpan config dengan auto clearsesi settings
+function saveConfig(config) {
+    try {
+        fs.writeFileSync('./config.json', JSON.stringify(config, null, 2));
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
+// Check access permission based on bot mode
 function checkAccess(senderNumber, config, fromMe = false) {
-    const botMode = config?.bot?.mode || 'self';
+    if (!config) return false;
 
-    if (botMode === 'public') {
-        return true; // Public mode: semua orang bisa akses
+    const botMode = config.mode || 'self';
+    const ownerNumbers = config.OWNER || [];
+    
+    // Remove @s.whatsapp.net if present
+    const cleanSender = senderNumber.replace('@s.whatsapp.net', '');
+    
+    if (botMode === 'self') {
+        // Only owner and fromMe can use
+        return fromMe || ownerNumbers.includes(cleanSender);
+    } else if (botMode === 'public') {
+        // Only owner can use this command even in public mode
+        return ownerNumbers.includes(cleanSender);
     }
 
-    // Mode self: hanya owner dan bot number dari config.json yang bisa akses
-    const botNumber = config?.bot?.botNumber;
-    const ownerNumber = config?.bot?.owner;
-
-    // Extract clean number (remove @s.whatsapp.net, etc)
-    const cleanSender = senderNumber?.split('@')[0]?.split(':')[0];
-    const cleanBot = botNumber?.split('@')[0]?.split(':')[0];
-    const cleanOwner = ownerNumber?.split('@')[0]?.split(':')[0];
-
-    // Check if sender is authorized berdasarkan config.json
-    const isBotNumber = cleanSender === cleanBot;
-    const isOwnerNumber = cleanSender === cleanOwner;
-    const isFromMe = fromMe === true;
-
-    return isFromMe || isBotNumber || isOwnerNumber;
+    return false;
 }
 
-// Send quoted message with animation
-async function sendQuotedMessage(sock, jid, text, quotedMsg) {
-    try {
-        const senderName = quotedMsg.pushName || 'User';
-        const formattedDate = new Date().toLocaleDateString('id-ID');
+// Global variable untuk auto cleaner interval
+let autoClearInterval = null;
 
-        // Get user profile picture
-        let profilePic = "https://files.catbox.moe/9cq0yk.jpg";
+// Class untuk mengelola auto clear sesi
+class AutoClearSesi {
+    constructor() {
+        this.isRunning = false;
+        this.interval = null;
+        this.nextClearTime = null;
+    }
+
+    start(hours = 1) {
+        if (this.isRunning) {
+            this.stop();
+        }
+
+        const intervalMs = hours * 60 * 60 * 1000; // Convert hours to milliseconds
+        this.nextClearTime = new Date(Date.now() + intervalMs);
+        
+        this.interval = setInterval(async () => {
+            await this.performAutoClear();
+            this.nextClearTime = new Date(Date.now() + intervalMs);
+        }, intervalMs);
+
+        this.isRunning = true;
+        autoClearInterval = this.interval;
+    }
+
+    stop() {
+        if (this.interval) {
+            clearInterval(this.interval);
+            this.interval = null;
+        }
+        this.isRunning = false;
+        this.nextClearTime = null;
+        autoClearInterval = null;
+    }
+
+    async performAutoClear() {
         try {
-            const userJid = quotedMsg.key.participant || quotedMsg.key.remoteJid;
-            profilePic = await sock.profilePictureUrl(userJid, 'image');
+            const result = clearSessionFiles();
+            if (result.success) {
+                // Log auto clear (bisa diperluas untuk notifikasi owner)
+                console.log(`[AUTO CLEAR] Session cleared automatically - ${result.deletedCount} files deleted`);
+            }
         } catch (error) {
-            // Use fallback image
+            console.log(`[AUTO CLEAR ERROR] ${error.message}`);
         }
+    }
 
-        // Get random video from VID_GIF_ANIME folder
-        const videoFolder = path.join(__dirname, '../VID_GIF_ANIME');
-        let selectedVideoPath = null;
-        let selectedFileName = 'clear-session';
-
-        if (fs.existsSync(videoFolder)) {
-            try {
-                const videoFiles = fs.readdirSync(videoFolder).filter(file => {
-                    const ext = path.extname(file).toLowerCase();
-                    return ['.mp4', '.gif', '.webm', '.mov', '.avi'].includes(ext);
-                });
-
-                if (videoFiles.length > 0) {
-                    const randomIndex = Math.floor(Math.random() * videoFiles.length);
-                    const selectedFile = videoFiles[randomIndex];
-                    selectedVideoPath = path.join(videoFolder, selectedFile);
-                    selectedFileName = path.basename(selectedFile, path.extname(selectedFile));
-                }
-            } catch (error) {
-                // Silent error handling
-            }
-        }
-
-        // Use selected video or fallback
-        const localVideoPath = selectedVideoPath || path.join(videoFolder, 'kanna-cry.mp4');
-
-        // Try sending with animation
-        if (fs.existsSync(localVideoPath)) {
-            const animatedContent = {
-                video: fs.readFileSync(localVideoPath),
-                caption: text,
-                gifPlayback: true,
-                ptv: false,
-                contextInfo: {
-                    forwardingScore: 999,
-                    isForwarded: true,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterName: `🧹 ${selectedFileName.charAt(0).toUpperCase() + selectedFileName.slice(1)} Clear Session`,
-                        newsletterJid: "120363312297133690@newsletter",
-                    },
-                    externalAdReply: {
-                        showAdAttribution: true,
-                        title: `🧹 ${senderName}`,
-                        body: `Clear Session • ${selectedFileName} • ${formattedDate}`,
-                        previewType: "VIDEO",
-                        thumbnailUrl: profilePic,
-                        sourceUrl: "https://wa.me/6289681008411",
-                        mediaType: 2,
-                        renderLargerThumbnail: false
-                    },
-                },
-            };
-
-            return await sock.sendMessage(jid, animatedContent, { quoted: quotedMsg });
-        }
-
-        // Fallback: send as regular text
-        return await sock.sendMessage(jid, { text: text }, { quoted: quotedMsg });
-
-    } catch (error) {
-        // Fallback: send simple text message
-        return await sock.sendMessage(jid, { text: text }, { quoted: quotedMsg });
+    getStatus() {
+        return {
+            isRunning: this.isRunning,
+            nextClearTime: this.nextClearTime
+        };
     }
 }
 
-// Show loading animation with progress bar
-async function showLoadingAnimation(sock, msg) {
+// Instance global auto clear
+const autoClearInstance = new AutoClearSesi();
+
+// Fungsi untuk menghapus file session selektif
+function clearSessionFiles() {
     try {
-        // Initial loading message - ensure we get the key for editing
-        let loadingMessage = null;
-        try {
-            loadingMessage = await sock.sendMessage(msg.key.remoteJid, {
-                text: `
-╭━━━『 🧹 MEMULAI CLEAR SESSION 』━━━❀
-┃ 
-┃ 🔄 *Sedang memproses...*
-┃ ⏳ Menginisialisasi pembersihan session
-┃ 📂 Target: ./sesi folder
-┃ 
-┃ 📊 Progress: [⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜] 0%
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-_⏳ Mohon tunggu, sedang memproses..._`
-            }, { quoted: msg });
-
-            // Small delay to ensure message is properly sent
-            await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (error) {
-            console.log('Failed to send initial loading message:', error.message);
-            // Use fallback method
-            loadingMessage = await sendQuotedMessage(sock, msg.key.remoteJid, `
-╭━━━『 🧹 MEMULAI CLEAR SESSION 』━━━❀
-┃ 
-┃ 🔄 *Sedang memproses...*
-┃ ⏳ Menginisialisasi pembersihan session
-┃ 📂 Target: ./sesi folder
-┃ 
-┃ 📊 Progress: [⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜] 0%
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-_⏳ Mohon tunggu, sedang memproses..._`, msg);
-        }
-
-        // Progress bar animation
-        const progressSteps = [
-            { percent: 10, message: "🔍 Memindai file session...", bar: "[🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜]" },
-            { percent: 25, message: "📋 Menganalisis file types...", bar: "[🟩🟩🟨⬜⬜⬜⬜⬜⬜⬜]" },
-            { percent: 40, message: "🔐 Memverifikasi file aman...", bar: "[🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜]" },
-            { percent: 55, message: "🗑️ Menghapus pre-key files...", bar: "[🟩🟩🟩🟩🟩🟨⬜⬜⬜⬜]" },
-            { percent: 70, message: "📤 Menghapus sender-key files...", bar: "[🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜]" },
-            { percent: 85, message: "📦 Membersihkan app-state files...", bar: "[🟩🟩🟩🟩🟩🟩🟩🟩🟨⬜]" },
-            { percent: 95, message: "🧹 Finalisasi pembersihan...", bar: "[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨]" },
-            { percent: 100, message: "✅ Pembersihan selesai!", bar: "[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩]" }
-        ];
-
-        // Animate progress bar
-        for (let i = 0; i < progressSteps.length; i++) {
-            const step = progressSteps[i];
-
-            // Add random delay for realistic feel
-            const delay = Math.random() * 800 + 500; // 500-1300ms
-            await new Promise(resolve => setTimeout(resolve, delay));
-
-            const loadingText = `
-╭━━━『 🧹 CLEAR SESSION PROGRESS 』━━━❀
-┃ 
-┃ 🔄 *Status: ${step.message}*
-┃ ⏳ Memproses pembersihan session...
-┃ 📂 Target: ./sesi folder
-┃ 
-┃ 📊 Progress: ${step.bar} ${step.percent}%
-┃ 
-┃ ${step.percent < 100 ? '⏰ Estimasi: ' + Math.ceil((100 - step.percent) / 10) + ' detik lagi...' : '🎉 Proses selesai!'}
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-_${step.percent < 100 ? '⏳ Mohon tunggu, jangan tutup chat ini...' : '✅ Siap menampilkan hasil!'}_`;
-
-            try {
-                // Edit the loading message properly
-                if (loadingMessage?.key) {
-                    await sock.sendMessage(msg.key.remoteJid, {
-                        text: loadingText,
-                        edit: loadingMessage.key
-                    });
-                } else {
-                    // Fallback: send new message if edit key not available
-                    await sendQuotedMessage(sock, msg.key.remoteJid, loadingText, msg);
-                }
-            } catch (editError) {
-                console.log('Edit message failed, sending new:', editError.message);
-                // If edit fails, send new message
-                await sendQuotedMessage(sock, msg.key.remoteJid, loadingText, msg);
-            }
-        }
-
-        // Final completion message with animation
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        const completionText = `
-╭━━━『 🎉 LOADING COMPLETE 』━━━❀
-┃ 
-┃ ✅ *Pembersihan session berhasil diselesaikan!*
-┃ 🎯 Progress: 100% Complete
-┃ ⚡ Status: Optimal
-┃ 
-┃ 📄 *Sedang menyiapkan laporan detail...*
-┃ 🔄 Menghitung statistik pembersihan...
-┃ 📊 Mengcompile data hasil...
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-_🚀 Tunggu sebentar, laporan lengkap akan ditampilkan..._`;
-
-        try {
-            if (loadingMessage?.key) {
-                await sock.sendMessage(msg.key.remoteJid, {
-                    text: completionText,
-                    edit: loadingMessage.key
-                });
-            } else {
-                // Send new message if edit key not available
-                await sendQuotedMessage(sock, msg.key.remoteJid, completionText, msg);
-            }
-        } catch (editError) {
-            console.log('Final edit message failed, sending new:', editError.message);
-            await sendQuotedMessage(sock, msg.key.remoteJid, completionText, msg);
-        }
-
-        // Wait before showing final result
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-    } catch (error) {
-        // Silent error handling untuk loading animation
-        console.log('Loading animation error:', error.message);
-    }
-}
-
-// Clear session files
-async function clearSessionFiles() {
-    try {
-        const sessionDir = './sesi'; // Using existing session directory
+        const sessionDir = './sesi';
+        
         if (!fs.existsSync(sessionDir)) {
-            return { success: false, deletedCount: 0, message: 'Session directory not found' };
+            return { success: false, message: 'Folder sesi tidak ditemukan' };
         }
+
+        // File yang TIDAK boleh dihapus (penting untuk koneksi)
+        const protectedFiles = [
+            'creds.json'
+        ];
 
         const files = fs.readdirSync(sessionDir);
         let deletedCount = 0;
-        let deletedFiles = []; // Track deleted files
+        let protectedCount = 0;
+        let deletedFiles = [];
+        let protectedFilesList = [];
+        let errorFiles = [];
 
-        // Files to preserve (don't delete these critical files)
-        const preserveFiles = ['creds.json'];
-
-        // Count file types
-        let fileTypes = {
-            'pre-key-': 0,
-            'sender-key-': 0,
-            'app-state': 0,
-            'other': 0
-        };
-
-        const filteredFiles = files.filter(file => {
-            // Skip preserved files
-            if (preserveFiles.includes(file)) {
-                return false;
-            }
-
-            // Count and categorize files
-            if (file.startsWith('pre-key-')) {
-                fileTypes['pre-key-']++;
-                return true;
-            } else if (file.startsWith('sender-key-')) {
-                fileTypes['sender-key-']++;
-                return true;
-            } else if (file.startsWith('app-state')) {
-                fileTypes['app-state']++;
-                return true;
-            } else if (file.endsWith('.json') && file !== 'creds.json') {
-                fileTypes['other']++;
-                return true;
-            }
-
-            return false;
-        });
-
-        // Delete filtered files and track them
-        for (const file of filteredFiles) {
+        files.forEach(file => {
             const filePath = path.join(sessionDir, file);
+            
             try {
-                fs.unlinkSync(filePath);
-                deletedCount++;
-                deletedFiles.push(file); // Add to deleted files list
-            } catch (err) {
-                // Skip files that can't be deleted
+                const stat = fs.statSync(filePath);
+
+                if (stat.isFile()) {
+                    if (protectedFiles.includes(file)) {
+                        protectedCount++;
+                        protectedFilesList.push(file);
+                    } else {
+                        try {
+                            fs.unlinkSync(filePath);
+                            deletedCount++;
+                            deletedFiles.push(file);
+                        } catch (error) {
+                            errorFiles.push(file);
+                        }
+                    }
+                } else if (stat.isDirectory()) {
+                    // Hapus folder dan isinya
+                    try {
+                        fs.rmSync(filePath, { recursive: true, force: true });
+                        deletedCount++;
+                        deletedFiles.push(file + '/');
+                    } catch (error) {
+                        errorFiles.push(file + '/');
+                    }
+                }
+            } catch (statError) {
+                errorFiles.push(file);
             }
-        }
+        });
 
         return {
             success: true,
             deletedCount,
-            deletedFiles, // Return list of deleted files
-            fileTypes,
-            preservedFiles: preserveFiles
+            protectedCount,
+            deletedFiles,
+            protectedFilesList,
+            errorFiles
         };
 
     } catch (error) {
-        return {
-            success: false,
-            deletedCount: 0,
-            deletedFiles: [], // Empty array on error
-            message: error.message
-        };
+        return { success: false, message: error.message };
     }
 }
 
-// Handle clear session command
-async function handleClearSession(sock, msg) {
+// Get session statistics before cleanup
+function getSesiStats() {
+    const sesiPath = './sesi';
+    if (!fs.existsSync(sesiPath)) {
+        return { totalFiles: 0, totalFolders: 0, totalSize: 0, fileTypes: {} };
+    }
+
+    let totalFiles = 0;
+    let totalFolders = 0;
+    let totalSize = 0;
+    const fileTypes = {};
+
+    const countFiles = (dirPath) => {
+        try {
+            const items = fs.readdirSync(dirPath);
+            
+            items.forEach(item => {
+                const itemPath = path.join(dirPath, item);
+                try {
+                    const stats = fs.statSync(itemPath);
+                    
+                    if (stats.isDirectory()) {
+                        totalFolders++;
+                        countFiles(itemPath);
+                    } else {
+                        totalFiles++;
+                        totalSize += stats.size;
+                        
+                        const ext = path.extname(item).toLowerCase() || 'no-ext';
+                        fileTypes[ext] = (fileTypes[ext] || 0) + 1;
+                    }
+                } catch (error) {
+                    // Skip problematic files
+                }
+            });
+        } catch (error) {
+            // Skip problematic directories
+        }
+    };
+
+    countFiles(sesiPath);
+
+    return {
+        totalFiles,
+        totalFolders,
+        totalSize,
+        fileTypes
+    };
+}
+
+// Fungsi untuk memvalidasi command dan arguments
+function validateClearSesiCommand(args) {
+    if (!args || args.length === 0) {
+        return { valid: true, action: 'manual' };
+    }
+
+    const command = args[0].toLowerCase();
+    
+    // Cek apakah ada argumen tambahan yang tidak valid
+    const checkExtraArgs = (expectedLength, commandName) => {
+        if (args.length > expectedLength) {
+            const extraArgs = args.slice(expectedLength).join(' ');
+            return {
+                valid: false,
+                error: `Argumen tambahan '${extraArgs}' tidak dikenal untuk command '${commandName}'. Format yang benar: .clearsesi ${commandName}`
+            };
+        }
+        return null;
+    };
+    
+    switch (command) {
+        case 'on':
+            // Cek argumen tambahan yang tidak valid
+            const onCheck = checkExtraArgs(1, 'on');
+            if (onCheck) return onCheck;
+            return { valid: true, action: 'enable_auto' };
+        
+        case 'off':
+            // Cek argumen tambahan yang tidak valid
+            const offCheck = checkExtraArgs(1, 'off');
+            if (offCheck) return offCheck;
+            return { valid: true, action: 'disable_auto' };
+        
+        case 'set':
+            if (args.length < 2) {
+                return { 
+                    valid: false, 
+                    error: 'Parameter waktu diperlukan untuk set command. Format: .clearsesi set [1-24]' 
+                };
+            }
+            
+            // Cek argumen tambahan yang tidak valid untuk set
+            if (args.length > 2) {
+                const extraArgs = args.slice(2).join(' ');
+                return {
+                    valid: false,
+                    error: `Argumen tambahan '${extraArgs}' tidak dikenal untuk command 'set'. Format yang benar: .clearsesi set [1-24]`
+                };
+            }
+            
+            const hourInput = args[1];
+            const hours = parseInt(hourInput);
+            
+            // Cek apakah input adalah angka
+            if (isNaN(hours)) {
+                return { 
+                    valid: false, 
+                    error: `'${hourInput}' bukan angka yang valid. Gunakan angka 1-24. Contoh: .clearsesi set 3` 
+                };
+            }
+            
+            // Cek range angka
+            if (hours < 1 || hours > 24) {
+                return { 
+                    valid: false, 
+                    error: `Waktu ${hours} jam tidak valid. Gunakan angka antara 1-24 jam. Contoh: .clearsesi set 6` 
+                };
+            }
+            
+            return { valid: true, action: 'set_time', hours };
+        
+        case 'status':
+            // Cek argumen tambahan yang tidak valid
+            const statusCheck = checkExtraArgs(1, 'status');
+            if (statusCheck) return statusCheck;
+            return { valid: true, action: 'status' };
+        
+        default:
+            // Deteksi typo umum dan berikan saran
+            const suggestions = {
+                'enable': 'on',
+                'aktif': 'on',
+                'nyalakan': 'on',
+                'start': 'on',
+                'disable': 'off',
+                'nonaktif': 'off',
+                'matikan': 'off',
+                'stop': 'off',
+                'atur': 'set',
+                'setting': 'set',
+                'config': 'set',
+                'info': 'status',
+                'check': 'status',
+                'cek': 'status'
+            };
+            
+            let errorMsg = `Command '${command}' tidak dikenal.`;
+            
+            if (suggestions[command]) {
+                errorMsg += ` Mungkin maksud Anda: '.clearsesi ${suggestions[command]}'?`;
+            }
+            
+            errorMsg += `\n\n📋 Command yang tersedia:\n• .clearsesi - Manual clear session\n• .clearsesi on - Aktifkan auto clear\n• .clearsesi off - Matikan auto clear\n• .clearsesi set [1-24] - Atur waktu auto clear\n• .clearsesi status - Lihat status auto clear`;
+            
+            return { 
+                valid: false, 
+                error: errorMsg
+            };
+    }
+}
+
+// Main handler function
+export async function handleClearSesiCommand(m, { hisoka, text, command }) {
     try {
         const config = loadConfig();
-        const messageText = msg.message?.conversation || 
-                          msg.message?.extendedTextMessage?.text || '';
-
-        // Check if this is a clear session command
-        const prefix = config.bot?.prefix || '.';
-        const clearCommands = [`${prefix}clearsesi`];
-        const isCommand = clearCommands.some(cmd => messageText.toLowerCase().startsWith(cmd.toLowerCase()));
-
-        if (!isCommand) {
-            return false; // Not a clear session command
+        if (!config) {
+            await Wily('❌ Config file not found', m, hisoka);
+            return;
         }
 
-        // Get sender information
-        const senderJid = msg.key.remoteJid;
-        const botNumber = sock.user?.id?.split(':')[0];
+        // Extract sender number
+        let senderNumber = '';
+        const isFromMe = m.key?.fromMe === true;
 
-        // Extract actual sender number
-        let actualSenderNumber;
-        if (msg.key.participant) {
-            // Group message
-            actualSenderNumber = msg.key.participant.split('@')[0];
-        } else if (msg.key.fromMe) {
-            // Message from bot itself
-            actualSenderNumber = botNumber;
+        if (isFromMe) {
+            // Get bot number from creds.json
+            senderNumber = getBotNumber();
         } else {
-            // Private chat
-            actualSenderNumber = senderJid?.split('@')[0];
-        }
-
-        // Check access permission berdasarkan config.json
-        if (!checkAccess(actualSenderNumber, config, msg.key.fromMe)) {
-            // For self mode: bot doesn't respond to unauthorized users (silent)
-            if (config?.bot?.mode === 'self') {
-                return true; // Command handled (silently ignored)
+            if (m.sender) {
+                senderNumber = m.sender.split('@')[0];
+            } else if (m.key?.participant) {
+                senderNumber = m.key.participant.split('@')[0];
+            } else if (m.key?.remoteJid && !m.key.remoteJid.includes('@g.us')) {
+                senderNumber = m.key.remoteJid.split('@')[0];
             }
-
-            // For public mode: show access denied message
-            const accessDeniedText = `
-🚫 *AKSES DITOLAK*
-
-❌ Maaf, fitur ini hanya berlaku untuk owner dan nomor bot saja
-
-🔐 *Fitur Khusus Owner/Bot:*
-• clearsesi - Bersihkan session bot
-• restart - Restart bot  
-• settings - Pengaturan bot
-
-🔧 *Konfigurasi dari config.json:*
-├─ Mode Bot: ${config.bot.mode.toUpperCase()}
-├─ Owner: ${config.bot.owner}
-├─ Bot Number: ${config.bot.botNumber}
-└─ Prefix: ${config.bot.prefix}
-
-💡 *Gunakan fitur lain:*
-• ${config.bot.prefix}menu - Lihat semua fitur
-• ${config.bot.prefix}ping - Cek ping bot`;
-
-            await sendQuotedMessage(sock, msg.key.remoteJid, accessDeniedText, msg);
-            return true;
         }
 
-        // Parse command arguments
-        const args = messageText.trim().split(/\s+/);
-
-        // If just the command without any parameters, execute clear session directly
-        if (args.length === 1) {
-            // Langsung execute clear session tanpa menampilkan help
-            // No help text, directly proceed to clear session
-        }
-
-        // Show animated loading progress with quoted reply
-        await showLoadingAnimation(sock, msg);
-
-        // Execute clear session
-        const result = await clearSessionFiles();
-
-        if (result.success) {
-            // Get current time info
-            const currentDate = new Date();
-            const date = currentDate.toLocaleDateString('id-ID', {
-                timeZone: 'Asia/Jakarta',
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            });
-
-            const time = currentDate.toLocaleString('id-ID', {
-                timeZone: 'Asia/Jakarta',
-                hour: 'numeric',
-                minute: '2-digit',
-                hour12: true
-            });
-
-            // Get greeting based on time
-            const currentHour = currentDate.toLocaleString('en-US', {
-                timeZone: 'Asia/Jakarta',
-                hour: 'numeric',
-                hour12: false
-            });
-            const hourNum = parseInt(currentHour);
-
-            let greeting, greetingEmoji;
-            if (hourNum >= 0 && hourNum < 4) {
-                greeting = "Tengah Malam";
-                greetingEmoji = "🌙";
-            } else if (hourNum >= 4 && hourNum < 10) {
-                greeting = "Pagi";
-                greetingEmoji = "🌅";
-            } else if (hourNum >= 10 && hourNum < 15) {
-                greeting = "Siang";
-                greetingEmoji = "☀️";
-            } else if (hourNum >= 15 && hourNum < 18) {
-                greeting = "Sore";
-                greetingEmoji = "🌤️";
-            } else {
-                greeting = "Malam";
-                greetingEmoji = "🌜";
+        // Check access permission
+        if (!checkAccess(senderNumber, config, isFromMe)) {
+            // Jika mode public, beri respon untuk non-owner
+            if (config.mode === 'public' && !isFromMe) {
+                await Wily('🚫 *Maaf, fitur ini khusus untuk Owner Bot*\n\n💡 Hanya Owner yang dapat menggunakan fitur clear sesi\n\n🔒 Akses terbatas untuk menjaga keamanan bot\n\n✨ Terima kasih atas pengertiannya!', m, hisoka);
             }
+            return;
+        }
 
-            // Calculate bot runtime
-            const processUptime = process.uptime();
-            const formatUptime = (uptime) => {
-                const days = Math.floor(uptime / (24 * 60 * 60));
-                const hours = Math.floor((uptime % (24 * 60 * 60)) / (60 * 60));
-                const minutes = Math.floor((uptime % (60 * 60)) / 60);
-                const seconds = Math.floor(uptime % 60);
+        // Parse and sanitize arguments
+        const args = text ? text.trim().split(' ').filter(arg => arg.length > 0) : [];
+        
+        // Additional input sanitization
+        const sanitizedArgs = args.map(arg => arg.trim().toLowerCase());
+        
+        const validation = validateClearSesiCommand(sanitizedArgs);
 
-                let result = '';
-                if (days > 0) result += `${days}d `;
-                if (hours > 0) result += `${hours}h `;
-                if (minutes > 0) result += `${minutes}m `;
-                result += `${seconds}s`;
+        if (!validation.valid) {
+            await Wily(`╭━━━『 *❌ COMMAND ERROR* 』━━━❀
+┃ 
+┃ 🚫 *${validation.error}*
+┃ 
+┃ 📋 *Format Penggunaan:*
+┃ ⌬ \`.clearsesi\` - Manual clear session
+┃ ⌬ \`.clearsesi on\` - Aktifkan auto clear
+┃ ⌬ \`.clearsesi off\` - Matikan auto clear  
+┃ ⌬ \`.clearsesi set [1-24]\` - Atur waktu auto clear
+┃ ⌬ \`.clearsesi status\` - Lihat status auto clear
+┃ 
+┃ 💡 *Contoh Penggunaan:*
+┃ ⌬ \`.clearsesi set 3\` (auto clear setiap 3 jam)
+┃ ⌬ \`.clearsesi on\` (aktifkan auto clear)
+┃ 
+┃ ⚠️ *Perhatian:*
+┃ ⌬ Tidak boleh ada spasi atau karakter tambahan
+┃ ⌬ Gunakan angka 1-24 untuk waktu
+┃ ⌬ Command harus ditulis dengan benar
+┃
+┃ ⏰ ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`, m, hisoka);
+            return;
+        }
 
-                return result.trim();
+        // Pastikan config memiliki auto clearsesi settings
+        if (!config.autoClearSesi) {
+            config.autoClearSesi = {
+                enabled: false,
+                interval: 1 // default 1 jam
             };
+        }
 
-            // Function to censor phone number (3 middle digits with ***)
-            function censorNumber(number) {
-                if (!number || number.length < 9) return number;
-                const start = number.slice(0, 6); // Ambil 6 digit pertama
-                const end = number.slice(-3); // Ambil 3 digit terakhir
-                return `${start}***${end}`;
-            }
+        // Handle different actions
+        switch (validation.action) {
+            case 'manual':
+                await handleManualClear(m, hisoka, config);
+                break;
+            
+            case 'enable_auto':
+                await handleEnableAuto(m, hisoka, config);
+                break;
+            
+            case 'disable_auto':
+                await handleDisableAuto(m, hisoka, config);
+                break;
+            
+            case 'set_time':
+                await handleSetTime(m, hisoka, config, validation.hours);
+                break;
+            
+            case 'status':
+                await handleStatus(m, hisoka, config);
+                break;
+        }
 
-            // Remove deleted files list - not needed in report
+    } catch (error) {
+        await Wily(`❌ *ERROR SISTEM*\n\n🚫 Terjadi kesalahan: ${error.message}\n\n💡 Silakan coba lagi atau restart bot`, m, hisoka);
+    }
+}
 
-            const successMessage = `╭━━━『 *🧹 CLEAR SESSION BERHASIL* 』━━━❀
+// Handle manual clear
+async function handleManualClear(m, hisoka, config) {
+    // Check if sesi directory exists
+    const sesiPath = './sesi';
+    if (!fs.existsSync(sesiPath)) {
+        await Wily('❌ *FOLDER SESI TIDAK DITEMUKAN*\n\n📂 Path: ./sesi/\n⚠️ Status: Sesi belum tersedia atau terhapus\n\n💡 *Solusi:*\n• Pastikan bot sudah login\n• Coba restart bot jika perlu', m, hisoka);
+        return;
+    }
+
+    await Wily('🧹 *STARTING SESSION CLEANUP*\n\n⏳ Analyzing session files...\n🔍 This may take a moment', m, hisoka);
+
+    // Get session statistics before cleanup
+    const beforeStats = getSesiStats();
+
+    // Proses pembersihan session
+    const result = clearSessionFiles();
+
+    if (!result.success) {
+        await Wily(`❌ *GAGAL MEMBERSIHKAN SESSION*\n\n🚫 Error: ${result.message}\n\n💡 Pastikan folder sesi dapat diakses`, m, hisoka);
+        return;
+    }
+
+    // Get statistics after cleanup
+    const afterStats = getSesiStats();
+
+    // Analyze file types from deleted files
+    const fileTypes = {
+        'pre-key': 0,
+        'sender-key': 0,
+        'session': 0,
+        'app-state': 0,
+        'other': 0
+    };
+
+    result.deletedFiles.forEach(file => {
+        if (file.includes('pre-key')) {
+            fileTypes['pre-key']++;
+        } else if (file.includes('sender-key')) {
+            fileTypes['sender-key']++;
+        } else if (file.includes('session-')) {
+            fileTypes['session']++;
+        } else if (file.includes('app-state')) {
+            fileTypes['app-state']++;
+        } else {
+            fileTypes['other']++;
+        }
+    });
+
+    // Calculate size saved
+    const sizeSaved = ((beforeStats.totalSize - afterStats.totalSize) / 1024 / 1024).toFixed(2);
+    const beforeSizeMB = (beforeStats.totalSize / 1024 / 1024).toFixed(2);
+    const afterSizeMB = (afterStats.totalSize / 1024 / 1024).toFixed(2);
+
+    let successMessage = `╭━━━『 *🧹 CLEAR SESSION BERHASIL* 』━━━❀
 ┃ 
 ┃ ✅ *Pembersihan Session Selesai!*
-┃ 
-┃ 📅 *Informasi Waktu*
-┃ ⌬ Tanggal: ${date}
-┃ ⌬ Waktu: ${time} WIB
-┃ ⌬ Selamat: ${greetingEmoji} ${greeting}
-┃ ⌬ Timezone: Asia/Jakarta 🇮🇩
-┃ 
-┃ 🤖 *Status Bot (dari config.json)*
-┃ ⌬ Runtime: ${formatUptime(processUptime)}
-┃ ⌬ Mode: ${config.bot.mode.toUpperCase()}
-┃ ⌬ Prefix: ${config.bot.prefix}
-┃ ⌬ Owner: ${censorNumber(config.bot.owner)}
-┃ ⌬ Bot Number: ${censorNumber(config.bot.botNumber)}
-┃ ⌬ Status: Online ✅
-┃ 
+┃  
 ┃ 🗑️ *Detail Pembersihan*
 ┃ ⌬ Total Dihapus: ${result.deletedCount} file
 ┃ ⌬ Status: Berhasil ✅
 ┃ ⌬ Folder Target: ./sesi
 ┃ 
 ┃ 📊 *Breakdown File Types*
-┃ ⌬ 🔑 Pre-Key: ${result.fileTypes['pre-key-']} file
-┃ ⌬ 📤 Sender-Key: ${result.fileTypes['sender-key-']} file
-┃ ⌬ 📦 App-State: ${result.fileTypes['app-state']} file
-┃ ⌬ 📄 Other: ${result.fileTypes['other']} file
-┃ 
-┃ 🔒 *File Aman (Preserved)*
-┃ ⌬ ${result.preservedFiles.join(', ')}
-┃ 
-┃ 🔐 *Akses Control (Config.json)*
-┃ ⌬ Hanya Owner & Bot Number bisa akses
-┃ ⌬ Mode: ${config.bot.mode} (${config.bot.mode === 'self' ? 'Terbatas' : 'Terbuka'})
-┃ ⌬ Authorization: ✅ Sesuai Config
-┃ 
-┃ ⚡ *System Status*
-┃ ⌬ Memory: Dibersihkan
-┃ ⌬ Performance: Optimal
-┃ ⌬ Bot Health: 100% 💚
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
+┃ ⌬ 🔑 Pre-Key: ${fileTypes['pre-key']} file
+┃ ⌬ 📤 Sender-Key: ${fileTypes['sender-key']} file
+┃ ⌬ 📱 Session: ${fileTypes['session']} file
+┃ ⌬ 📦 App-State: ${fileTypes['app-state']} file
+┃ ⌬ 📄 Other: ${fileTypes['other']} file
+┃
+┃ 💾 *Storage Information*
+┃ ⌬ Sebelum: ${beforeSizeMB} MB (${beforeStats.totalFiles} files)
+┃ ⌬ Sesudah: ${afterSizeMB} MB (${afterStats.totalFiles} files)
+┃ ⌬ Dibersihkan: ${sizeSaved} MB
+┃
+┃ 🛡️ *File Dilindungi*
+┃ ⌬ ${result.protectedFilesList.join(', ')}
+┃
+┃ 🎯 *Status Akhir*
+┃ ⌬ ✅ Pembersihan selesai
+┃ ⌬ 🔐 Kredensial aman
+┃ ⌬ 🔄 Session siap koneksi
+┃ ⌬ ⚡ Bot tetap aktif
+┃
+┃ ⏰ ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}
+┃ 🚀 WilyKun Session Cleanup System
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
 
-_🚀 Session berhasil dibersihkan! Bot siap bekerja optimal sesuai konfigurasi config.json._`;
+    await Wily(successMessage, m, hisoka);
+}
 
-            await sendQuotedMessage(sock, msg.key.remoteJid, successMessage, msg);
-        } else {
-            const errorMessage = `❌ *GAGAL MEMBERSIHKAN SESSION*
+// Handle enable auto clear
+async function handleEnableAuto(m, hisoka, config) {
+    if (config.autoClearSesi.enabled) {
+        const status = autoClearInstance.getStatus();
+        const nextClear = status.nextClearTime ? status.nextClearTime.toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'}) : 'Tidak ada';
+        
+        await Wily(`ℹ️ *AUTO CLEAR SESI SUDAH AKTIF*\n\n🟢 *Status:* Berjalan\n⏰ *Interval:* ${config.autoClearSesi.interval} jam\n📅 *Clear Berikutnya:* ${nextClear}\n\n💡 Gunakan \`.clearsesi off\` untuk menonaktifkan\n🔧 Gunakan \`.clearsesi set [1-24]\` untuk mengubah waktu`, m, hisoka);
+        return;
+    }
 
-🚫 Terjadi kesalahan saat membersihkan session:
-${result.message || 'Unknown error'}
+    config.autoClearSesi.enabled = true;
+    const saved = saveConfig(config);
 
-🔧 *Konfigurasi Bot (config.json):*
-├─ Mode: ${config.bot.mode.toUpperCase()}
-├─ Owner: ${config.bot.owner}
-├─ Bot Number: ${config.bot.botNumber}
-└─ Prefix: ${config.bot.prefix}
-
-💡 *Saran:*
-• Coba lagi dalam beberapa saat
-• Pastikan bot memiliki akses file system
-• Hubungi owner jika masalah berlanjut`;
-
-            await sendQuotedMessage(sock, msg.key.remoteJid, errorMessage, msg);
-        }
-
-        return true; // Command handled
-
-    } catch (error) {
-        const config = loadConfig();
-        const errorMessage = `❌ *ERROR CLEAR SESSION*
-
-🚫 Terjadi kesalahan sistem:
-${error.message}
-
-🔧 *Info Bot (config.json):*
-├─ Mode: ${config.bot.mode}
-├─ Owner: ${config.bot.owner}
-└─ Bot Number: ${config.bot.botNumber}
-
-💡 Silakan coba lagi atau hubungi owner bot`;
-
-        try {
-            await sendQuotedMessage(sock, msg.key.remoteJid, errorMessage, msg);
-        } catch (sendError) {
-            // Silent error if can't send message
-        }
-
-        return true; // Command handled even with error
+    if (saved) {
+        autoClearInstance.start(config.autoClearSesi.interval);
+        const nextClear = autoClearInstance.getStatus().nextClearTime.toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'});
+        
+        await Wily(`✅ *AUTO CLEAR SESI DIAKTIFKAN*\n\n🟢 *Status:* Aktif\n⏰ *Interval:* ${config.autoClearSesi.interval} jam\n📅 *Clear Pertama:* ${nextClear}\n\n🎯 *Fitur Auto Clear:*\n• Otomatis membersihkan session\n• Menjaga performa bot\n• File penting tetap aman\n• Background process\n\n💾 Pengaturan tersimpan ke config.json`, m, hisoka);
+    } else {
+        await Wily('❌ Gagal menyimpan pengaturan ke config.json', m, hisoka);
     }
 }
 
-async function ReplyRynzz(teks, msg, sock) {
-    return await Wily(teks, msg, sock);
+// Handle disable auto clear
+async function handleDisableAuto(m, hisoka, config) {
+    if (!config.autoClearSesi.enabled) {
+        await Wily(`ℹ️ *AUTO CLEAR SESI SUDAH NONAKTIF*\n\n🔴 *Status:* Tidak aktif\n⏰ *Interval:* ${config.autoClearSesi.interval} jam (Tersimpan)\n\n💡 Gunakan \`.clearsesi on\` untuk mengaktifkan\n🔧 Gunakan \`.clearsesi set [1-24]\` untuk mengubah waktu`, m, hisoka);
+        return;
+    }
+
+    config.autoClearSesi.enabled = false;
+    const saved = saveConfig(config);
+
+    if (saved) {
+        autoClearInstance.stop();
+        
+        await Wily(`🔴 *AUTO CLEAR SESI DINONAKTIFKAN*\n\n🔴 *Status:* Nonaktif\n⏰ *Interval:* ${config.autoClearSesi.interval} jam (Tersimpan)\n\n🎯 *Perubahan:*\n• Auto clear dihentikan\n• Manual clear masih tersedia\n• Pengaturan waktu tersimpan\n• Background process dihentikan\n\n💾 Pengaturan tersimpan ke config.json`, m, hisoka);
+    } else {
+        await Wily('❌ Gagal menyimpan pengaturan ke config.json', m, hisoka);
+    }
 }
 
-module.exports = {
-    handleClearSession,
-    clearSessionFiles,
-    checkAccess,
-    loadConfig
+// Handle set time
+async function handleSetTime(m, hisoka, config, hours) {
+    const oldInterval = config.autoClearSesi.interval;
+    config.autoClearSesi.interval = hours;
+    const saved = saveConfig(config);
+
+    if (saved) {
+        // Restart auto clear dengan interval baru jika sedang aktif
+        if (config.autoClearSesi.enabled) {
+            autoClearInstance.start(hours);
+            const nextClear = autoClearInstance.getStatus().nextClearTime.toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'});
+            
+            await Wily(`⏰ *WAKTU AUTO CLEAR DIUBAH*\n\n🔄 *Perubahan:* ${oldInterval} jam ➜ ${hours} jam\n🟢 *Status:* Aktif (Direstart)\n📅 *Clear Berikutnya:* ${nextClear}\n\n🎯 *Info:*\n• Auto clear restart dengan interval baru\n• Countdown dimulai ulang\n• Pengaturan tersimpan otomatis\n\n💾 Tersimpan ke config.json`, m, hisoka);
+        } else {
+            await Wily(`⏰ *WAKTU AUTO CLEAR DIATUR*\n\n🔄 *Perubahan:* ${oldInterval} jam ➜ ${hours} jam\n🔴 *Status:* Nonaktif (Pengaturan tersimpan)\n\n🎯 *Info:*\n• Waktu berhasil diubah\n• Auto clear belum aktif\n• Gunakan \`.clearsesi on\` untuk mengaktifkan\n\n💾 Tersimpan ke config.json`, m, hisoka);
+        }
+    } else {
+        await Wily('❌ Gagal menyimpan pengaturan ke config.json', m, hisoka);
+    }
+}
+
+// Handle status
+async function handleStatus(m, hisoka, config) {
+    const status = autoClearInstance.getStatus();
+    const isEnabled = config.autoClearSesi.enabled;
+    const interval = config.autoClearSesi.interval;
+    const statusEmoji = isEnabled ? '🟢' : '🔴';
+    const statusText = isEnabled ? 'AKTIF' : 'NONAKTIF';
+    const nextClear = status.nextClearTime ? status.nextClearTime.toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'}) : 'Tidak ada';
+
+    // Get session stats
+    const sesiStats = getSesiStats();
+    const sesiSizeMB = (sesiStats.totalSize / 1024 / 1024).toFixed(2);
+
+    await Wily(`╭━━━『 *📊 STATUS AUTO CLEAR SESI* 』━━━❀
+┃ 
+┃ ${statusEmoji} *Status:* ${statusText}
+┃ ⏰ *Interval:* ${interval} jam
+┃ 📅 *Clear Berikutnya:* ${nextClear}
+┃ 
+┃ 📂 *Session Folder Info*
+┃ ⌬ Total Files: ${sesiStats.totalFiles}
+┃ ⌬ Total Size: ${sesiSizeMB} MB
+┃ ⌬ Folders: ${sesiStats.totalFolders}
+┃ 
+┃ 🎛️ *Available Commands*
+┃ ⌬ \`.clearsesi\` - Manual clear
+┃ ⌬ \`.clearsesi on\` - Enable auto
+┃ ⌬ \`.clearsesi off\` - Disable auto
+┃ ⌬ \`.clearsesi set [1-24]\` - Set time
+┃ 
+┃ ⏰ ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}
+┃ 🚀 WilyKun Auto Clear System
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`, m, hisoka);
+}
+
+// Export info untuk digunakan di message.js
+export const clearSesiInfo = {
+    command: ['clearsesi'],
+    description: 'Membersihkan file session dengan opsi otomatis (Owner only)'
 };
+
+// Export fungsi utama
+export const clearsesi = handleClearSesiCommand;
+
+// Export auto clear instance untuk digunakan di index.js jika diperlukan
+export const autoClearSesiInstance = autoClearInstance;

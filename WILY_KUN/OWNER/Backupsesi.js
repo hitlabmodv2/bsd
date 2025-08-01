@@ -1,8 +1,27 @@
 
-const fs = require('fs');
-const path = require('path');
-const archiver = require('archiver');
-const { Wily } = require('../../CODE_REPLAY/reply');
+import fs from 'fs';
+import path from 'path';
+import archiver from 'archiver';
+import { Wily } from '../../CODE_REPLY/reply.js';
+
+// Fungsi untuk membaca nomor bot dari creds.json
+function getBotNumber() {
+    try {
+        if (fs.existsSync('./sesi/creds.json')) {
+            const creds = JSON.parse(fs.readFileSync('./sesi/creds.json', 'utf8'));
+            if (creds.me?.id) {
+                const botNumber = creds.me.id.split(':')[0];
+                return botNumber;
+            }
+        }
+        // Fallback ke config.json
+        const config = loadConfig();
+        const fallbackNumber = config.OWNER[0] || "6289681008411";
+        return fallbackNumber;
+    } catch (error) {
+        return "6289681008411"; // fallback nomor bot
+    }
+}
 
 // Load config function
 function loadConfig() {
@@ -19,24 +38,21 @@ function loadConfig() {
 }
 
 // Check access permission based on bot mode
-function checkAccess(senderNumber, config) {
-    if (!config || !config.bot) return false;
+function checkAccess(senderNumber, config, fromMe = false) {
+    if (!config) return false;
 
-    const botMode = config.bot.mode || 'self';
-    const ownerNumber = config.bot.owner || '';
-    const botNumber = config.bot.botNumber || '';
-
+    const botMode = config.mode || 'self';
+    const ownerNumbers = config.OWNER || [];
+    
     // Remove @s.whatsapp.net if present
     const cleanSender = senderNumber.replace('@s.whatsapp.net', '');
-    const cleanOwner = ownerNumber.replace('@s.whatsapp.net', '');
-    const cleanBot = botNumber.replace('@s.whatsapp.net', '');
-
+    
     if (botMode === 'self') {
-        // Only owner and bot number can use
-        return cleanSender === cleanOwner || cleanSender === cleanBot;
+        // Only owner and fromMe can use
+        return fromMe || ownerNumbers.includes(cleanSender);
     } else if (botMode === 'public') {
-        // Everyone can use
-        return true;
+        // Only owner can use this command even in public mode
+        return ownerNumbers.includes(cleanSender);
     }
 
     return false;
@@ -45,63 +61,101 @@ function checkAccess(senderNumber, config) {
 // Function to clean up temporary files
 function cleanupTempFiles() {
     try {
-        const tempPath = './temp';
-        if (fs.existsSync(tempPath)) {
-            const files = fs.readdirSync(tempPath);
-            files.forEach(file => {
-                if (file.endsWith('.zip')) {
-                    const filePath = path.join(tempPath, file);
-                    const stats = fs.statSync(filePath);
-                    const fileAge = Date.now() - stats.mtime.getTime();
+        const dataPath = './DATA';
+        if (!fs.existsSync(dataPath)) {
+            fs.mkdirSync(dataPath, { recursive: true });
+        }
 
-                    // Delete files older than 1 hour
-                    if (fileAge > 3600000) {
-                        fs.unlinkSync(filePath);
+        const backupSesiPath = path.join(dataPath, 'BACKUPSESI');
+        if (!fs.existsSync(backupSesiPath)) {
+            fs.mkdirSync(backupSesiPath, { recursive: true });
+        }
+
+        // Clean old backup files (keep only last 5)
+        if (fs.existsSync(backupSesiPath)) {
+            const files = fs.readdirSync(backupSesiPath);
+            const backupFiles = files.filter(file => file.startsWith('SESI_BACKUP_V') && file.endsWith('.zip'));
+            
+            if (backupFiles.length > 5) {
+                // Sort by version number and keep only last 5
+                backupFiles.sort((a, b) => {
+                    const versionA = parseInt(a.match(/V(\d+)/)?.[1] || '0');
+                    const versionB = parseInt(b.match(/V(\d+)/)?.[1] || '0');
+                    return versionA - versionB;
+                });
+
+                // Delete older files
+                const filesToDelete = backupFiles.slice(0, -5);
+                filesToDelete.forEach(file => {
+                    try {
+                        fs.unlinkSync(path.join(backupSesiPath, file));
+                    } catch (error) {
+                        // Silent error
                     }
-                }
-            });
+                });
+            }
         }
     } catch (error) {
         // Silent error handling
     }
 }
 
-// Create ZIP backup of session folder - FIXED VERSION
-async function createSessionZip() {
+// Create ZIP backup of sesi folder
+async function createSesiZip() {
     return new Promise((resolve, reject) => {
-        const sessionPath = './sesi';
-        const tempPath = './temp';
+        const sesiPath = './sesi';
+        const backupPath = './DATA/BACKUPSESI';
 
-        // Create temp directory if it doesn't exist
-        if (!fs.existsSync(tempPath)) {
-            fs.mkdirSync(tempPath, { recursive: true });
+        // Create backup directory if it doesn't exist
+        if (!fs.existsSync(backupPath)) {
+            fs.mkdirSync(backupPath, { recursive: true });
         }
 
-        const now = new Date();
-        const jakartaTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jakarta"}));
-        const timestamp = jakartaTime.toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
-        const zipFileName = `session_backup_${timestamp}.zip`;
-        const zipPath = path.join(tempPath, zipFileName);
+        // Generate version number based on existing files
+        let versionNumber = 1;
+        try {
+            const existingFiles = fs.readdirSync(backupPath).filter(file => 
+                file.startsWith('SESI_BACKUP_V') && file.endsWith('.zip')
+            );
+
+            if (existingFiles.length > 0) {
+                const versions = existingFiles.map(file => {
+                    const match = file.match(/V(\d+)_/);
+                    return match ? parseInt(match[1]) : 0;
+                });
+                versionNumber = Math.max(...versions) + 1;
+            }
+        } catch (error) {
+            // If can't read backup directory, just use version 1
+        }
+
+        const zipFileName = `SESI_BACKUP_V${versionNumber}_WILY_SESSION.zip`;
+        const zipPath = path.join(backupPath, zipFileName);
 
         const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', {
             zlib: { level: 6 },
             gzip: false,
-            statConcurrency: 1
+            statConcurrency: 1,
+            store: false
         });
 
-        // Extended timeout for better reliability
+        // Count files for progress
+        let includedFiles = [];
+
+        // Timeout handler
         const timeout = setTimeout(() => {
             archive.abort();
-            reject(new Error('Backup timeout - process took too long'));
-        }, 180000); // 3 minutes timeout
+            reject(new Error('Session backup timeout - process took too long'));
+        }, 180000); // 3 minute timeout
 
         output.on('close', () => {
             clearTimeout(timeout);
             resolve({
                 path: zipPath,
                 filename: zipFileName,
-                size: archive.pointer()
+                size: archive.pointer(),
+                includedFiles: includedFiles
             });
         });
 
@@ -121,385 +175,248 @@ async function createSessionZip() {
 
         archive.pipe(output);
 
-        // Add session files with proper filtering
-        if (fs.existsSync(sessionPath)) {
-            const sessionFiles = fs.readdirSync(sessionPath);
+        try {
+            // Add sesi files with proper filtering
+            if (fs.existsSync(sesiPath)) {
+                const sesiFiles = fs.readdirSync(sesiPath);
 
-            sessionFiles.forEach(file => {
-                const filePath = path.join(sessionPath, file);
+                sesiFiles.forEach(file => {
+                    const filePath = path.join(sesiPath, file);
 
-                try {
-                    const stats = fs.statSync(filePath);
+                    try {
+                        const stats = fs.statSync(filePath);
 
-                    if (stats.isFile()) {
-                        // Include essential files
-                        if (file === 'creds.json' || 
-                            file.startsWith('pre-key') ||
-                            file.startsWith('sender-key') ||
-                            file.startsWith('app-state')) {
-                            archive.file(filePath, { name: `sesi/${file}` });
+                        if (stats.isFile()) {
+                            // Include important session files
+                            if (!file.startsWith('.') && 
+                                !file.endsWith('.tmp') && 
+                                !file.endsWith('.backup') &&
+                                !file.includes('~')) {
+                                archive.file(filePath, { name: `sesi/${file}` });
+                                includedFiles.push(`sesi/${file}`);
+                            }
+                        } else if (stats.isDirectory()) {
+                            // Include subdirectories
+                            const subFiles = fs.readdirSync(filePath);
+                            subFiles.forEach(subFile => {
+                                const subFilePath = path.join(filePath, subFile);
+                                try {
+                                    const subStats = fs.statSync(subFilePath);
+                                    if (subStats.isFile() && 
+                                        !subFile.startsWith('.') && 
+                                        !subFile.endsWith('.tmp')) {
+                                        archive.file(subFilePath, { name: `sesi/${file}/${subFile}` });
+                                        includedFiles.push(`sesi/${file}/${subFile}`);
+                                    }
+                                } catch (error) {
+                                    // Skip problematic files
+                                }
+                            });
                         }
+                    } catch (fileError) {
+                        // Skip problematic files silently
                     }
-                } catch (fileError) {
-                    // Skip problematic files silently
-                }
-            });
-        }
+                });
+            }
 
-        // Add config.json if exists
-        if (fs.existsSync('./config.json')) {
-            archive.file('./config.json', { name: 'config.json' });
-        }
+            // Add config.json if exists
+            if (fs.existsSync('./config.json')) {
+                archive.file('./config.json', { name: 'config.json' });
+                includedFiles.push('config.json');
+            }
 
-        // Finalize the archive
-        archive.finalize();
+            archive.finalize();
+        } catch (error) {
+            clearTimeout(timeout);
+            reject(error);
+        }
     });
 }
 
 // Get session statistics
-function getSessionStats() {
-    const sessionPath = './sesi';
-    if (!fs.existsSync(sessionPath)) {
-        return { totalFiles: 0, totalFolders: 1, totalSize: 0, fileTypes: {} };
+function getSesiStats() {
+    const sesiPath = './sesi';
+    if (!fs.existsSync(sesiPath)) {
+        return { totalFiles: 0, totalFolders: 0, totalSize: 0, fileTypes: {} };
     }
 
-    const files = fs.readdirSync(sessionPath);
+    let totalFiles = 0;
+    let totalFolders = 0;
     let totalSize = 0;
     const fileTypes = {};
 
-    files.forEach(file => {
+    const countFiles = (dirPath) => {
         try {
-            const filePath = path.join(sessionPath, file);
-            const stats = fs.statSync(filePath);
-            totalSize += stats.size;
-
-            const ext = path.extname(file).toLowerCase() || 'no-ext';
-            fileTypes[ext] = (fileTypes[ext] || 0) + 1;
+            const items = fs.readdirSync(dirPath);
+            
+            items.forEach(item => {
+                const itemPath = path.join(dirPath, item);
+                try {
+                    const stats = fs.statSync(itemPath);
+                    
+                    if (stats.isDirectory()) {
+                        totalFolders++;
+                        countFiles(itemPath);
+                    } else {
+                        totalFiles++;
+                        totalSize += stats.size;
+                        
+                        const ext = path.extname(item).toLowerCase() || 'no-ext';
+                        fileTypes[ext] = (fileTypes[ext] || 0) + 1;
+                    }
+                } catch (error) {
+                    // Skip problematic files
+                }
+            });
         } catch (error) {
-            // Skip problematic files
+            // Skip problematic directories
         }
-    });
+    };
+
+    countFiles(sesiPath);
 
     return {
-        totalFiles: files.length,
-        totalFolders: 1, // sesi folder
-        totalSize: totalSize,
-        fileTypes: fileTypes
+        totalFiles,
+        totalFolders,
+        totalSize,
+        fileTypes
     };
 }
 
-async function sendSessionBackup(client, msg) {
+// Send backup to all owners
+async function sendBackupToOwners(sock, zipInfo, config) {
+    const owners = config.OWNER || [];
+    const results = [];
+
+    for (const ownerNumber of owners) {
+        try {
+            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
+            
+            // Send document
+            await sock.sendMessage(ownerJid, {
+                document: fs.readFileSync(zipInfo.path),
+                fileName: zipInfo.filename,
+                mimetype: 'application/zip',
+                caption: `🔒 *SESSION BACKUP*\n\n📦 *File Info:*\n• Nama: ${zipInfo.filename}\n• Path: DATA/BACKUPSESI/${zipInfo.filename}\n• Size: ${(zipInfo.size / 1024 / 1024).toFixed(2)} MB\n• File Terbackup: ${zipInfo.includedFiles.length}\n\n⏰ Dibuat: ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}\n🚀 WilyKun Session Backup System`
+            });
+
+            results.push({ owner: ownerNumber, status: 'success' });
+        } catch (error) {
+            results.push({ owner: ownerNumber, status: 'failed', error: error.message });
+        }
+    }
+
+    return results;
+}
+
+// Main backup command handler
+async function handleBackupSesiCommand(m, { hisoka, text, command }) {
     try {
         const config = loadConfig();
+        
         if (!config) {
+            await Wily('❌ Config file not found', m, hisoka);
             return;
         }
 
-        // Get sender number
-        const senderNumber = msg.key.participant || msg.key.remoteJid;
-        const cleanSender = senderNumber.replace('@s.whatsapp.net', '');
+        // Extract sender number
+        let senderNumber = '';
+        const isFromMe = m.key?.fromMe === true;
+
+        if (isFromMe) {
+            // Get bot number from creds.json
+            senderNumber = getBotNumber();
+        } else {
+            if (m.sender) {
+                senderNumber = m.sender.split('@')[0];
+            } else if (m.key?.participant) {
+                senderNumber = m.key.participant.split('@')[0];
+            } else if (m.key?.remoteJid && !m.key.remoteJid.includes('@g.us')) {
+                senderNumber = m.key.remoteJid.split('@')[0];
+            }
+        }
 
         // Check access permission
-        if (!checkAccess(senderNumber, config)) {
-            return; // No response for unauthorized users
+        if (!checkAccess(senderNumber, config, isFromMe)) {
+            // Jika mode public, beri respon untuk non-owner
+            if (config.mode === 'public' && !isFromMe) {
+                await Wily('🚫 *Maaf, fitur ini khusus untuk Owner Bot*\n\n💡 Hanya Owner yang dapat menggunakan fitur backup sesi\n\n🔒 Akses terbatas untuk menjaga keamanan bot\n\n✨ Terima kasih atas pengertiannya!', m, hisoka);
+            }
+            return;
         }
 
-        // Check bot connection status
-        if (!client || !client.user) {
-            const connectionError = `╭━━━『 ❌ BOT CONNECTION ERROR 』━━━❀
-┃ 
-┃ ❌ *Bot tidak terhubung dengan baik!*
-┃ 
-┃ 🔍 *Status:* Bot offline atau koneksi bermasalah
-┃ ⚠️  *Solusi:* Tunggu bot reconnect atau restart
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
-
-            return await Wily(connectionError, msg, client);
+        // Check if sesi directory exists
+        const sesiPath = './sesi';
+        if (!fs.existsSync(sesiPath)) {
+            await Wily('❌ *FOLDER SESI TIDAK DITEMUKAN*\n\n📂 Path: ./sesi/\n⚠️ Status: Sesi belum tersedia atau terhapus\n\n💡 *Solusi:*\n• Pastikan bot sudah login\n• Coba restart bot jika perlu', m, hisoka);
+            return;
         }
 
-        // Check if session directory exists
-        const sessionPath = './sesi';
-        if (!fs.existsSync(sessionPath)) {
-            const errorMessage = `╭━━━『 ❌ BACKUP SESSION GAGAL 』━━━❀
-┃ 
-┃ ❌ *Folder Session Tidak Ditemukan!*
-┃ 
-┃ 📂 *Path:* ./sesi/
-┃ ⚠️  *Status:* Session belum tersedia atau terhapus
-┃ 
-┃ 💡 *Solusi:*
-┃ ▫️ Pastikan bot sudah login
-┃ ▫️ Coba restart bot jika perlu
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
+        await Wily('🔄 *STARTING SESSION BACKUP*\n\n⏳ Creating backup archive...\n📦 This may take a moment', m, hisoka);
 
-            return await Wily(errorMessage, msg, client);
-        }
-
-        // Send processing message using Wily
-        const processingMsg = `╭━━━『 🔄 MEMPROSES BACKUP 』━━━❀
-┃ 
-┃ ⏳ *Sedang Membuat Backup ZIP...*
-┃ 
-┃ 🔧 *Proses:*
-┃ ▫️ Mengumpulkan file session... 📂
-┃ ▫️ Kompresi optimized (level 6) 🗜️
-┃ ▫️ Filtering file penting saja ⚡
-┃ ▫️ Mempersiapkan pengiriman 📤
-┃ 
-┃ ⚡ *Estimasi: 60-180 detik*
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
-
-        await Wily(processingMsg, msg, client);
-
-        // Get target number from config
-        const targetNumber = config.backupTarget || config.bot.owner || '6289688206739';
-        const targetJid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
+        // Clean up old files first
+        cleanupTempFiles();
 
         // Get session statistics
-        const sessionStats = getSessionStats();
+        const sesiStats = getSesiStats();
 
-        // Create ZIP backup with better error handling
-        let zipInfo;
-        try {
-            zipInfo = await createSessionZip();
-        } catch (zipError) {
-            const zipErrorMsg = `╭━━━『 ❌ BACKUP SESSION GAGAL 』━━━❀
-┃ 
-┃ ❌ *Gagal membuat ZIP backup!*
-┃ 
-┃ 🔍 *Detail Error:*
-┃ ▫️ ${zipError.message}
-┃ 
-┃ 💡 *Solusi:*
-┃ ▫️ Coba lagi dalam beberapa saat
-┃ ▫️ Pastikan ada ruang disk yang cukup
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
+        // Create backup zip
+        const zipInfo = await createSesiZip();
 
-            return await Wily(zipErrorMsg, msg, client);
-        }
+        // Send to all owners
+        const sendResults = await sendBackupToOwners(hisoka, zipInfo, config);
 
-        // Get current time info
-        const now = new Date();
-        const jakartaTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jakarta"}));
+        // Generate results message
+        const successCount = sendResults.filter(r => r.status === 'success').length;
+        const failedCount = sendResults.filter(r => r.status === 'failed').length;
+        const totalOwners = config.OWNER.length;
 
-        const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-        const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 
-                           'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+        // Create detailed file lists
+        const includedCount = zipInfo.includedFiles.length;
+        
+        // Limit displayed files to prevent message overflow
+        const maxDisplayFiles = 8;
+        const includedDisplay = zipInfo.includedFiles.slice(0, maxDisplayFiles);
 
-        const dayName = dayNames[jakartaTime.getDay()];
-        const date = jakartaTime.getDate();
-        const monthName = monthNames[jakartaTime.getMonth()];
-        const year = jakartaTime.getFullYear();
-        const time = jakartaTime.toLocaleTimeString('id-ID', { 
-            hour: '2-digit', 
-            minute: '2-digit',
-            timeZone: 'Asia/Jakarta' 
+        let resultMessage = `✅ *SESSION BACKUP SELESAI*\n\n`;
+        resultMessage += `📦 *File Info:*\n`;
+        resultMessage += `• Nama: ${zipInfo.filename}\n`;
+        resultMessage += `• Path: DATA/BACKUPSESI/${zipInfo.filename}\n`;
+        resultMessage += `• Size: ${(zipInfo.size / 1024 / 1024).toFixed(2)} MB\n`;
+        resultMessage += `• Total File Terbackup: ${includedCount}\n\n`;
+        
+        resultMessage += `📊 *Session Statistics:*\n`;
+        resultMessage += `• Total File: ${sesiStats.totalFiles} files\n`;
+        resultMessage += `• Total Folder: ${sesiStats.totalFolders} folders\n`;
+        resultMessage += `• Total Size: ${(sesiStats.totalSize / 1024 / 1024).toFixed(2)} MB\n`;
+        resultMessage += `• JSON Files: ${sesiStats.fileTypes['.json'] || 0}\n`;
+        resultMessage += `• Other Files: ${sesiStats.fileTypes['no-ext'] || 0}\n\n`;
+        
+        resultMessage += `📋 *File Terbackup:*\n`;
+        includedDisplay.forEach(file => {
+            resultMessage += `✅ ${file}\n`;
         });
-
-        // Sensor number function
-        function sensorNumber(number) {
-            const clean = number.replace('@s.whatsapp.net', '');
-            if (clean.length < 6) return clean;
-            const start = clean.substring(0, 6);
-            const end = clean.substring(clean.length - 3);
-            return `${start}***${end}`;
+        if (includedCount > maxDisplayFiles) {
+            resultMessage += `... dan ${includedCount - maxDisplayFiles} file lainnya\n`;
+        }
+        
+        resultMessage += `\n📤 *Pengiriman:*\n`;
+        resultMessage += `👥 Total Owner: ${totalOwners}\n`;
+        resultMessage += `✅ Berhasil: ${successCount}\n`;
+        
+        if (failedCount > 0) {
+            resultMessage += `❌ Gagal: ${failedCount}\n`;
         }
 
-        // Format file size
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
+        resultMessage += `\n⏰ ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}`;
+        resultMessage += `\n🚀 WilyKun Session Backup System`;
 
-        // Caption for the ZIP file (without filename display)
-        const zipCaption = `╭━━━『 📦 WhatsApp Bot Session Backup 』━━━❀
-┃ 
-┃ 🤖 *Bot Session ZIP Backup*
-┃ 
-┃ 📅 *Backup Info*
-┃ ▫️ Tanggal: ${dayName}, ${date} ${monthName} ${year}
-┃ ▫️ Waktu: ${time} WIB 🇮🇩
-┃ ▫️ Size: ${formatFileSize(zipInfo.size)}
-┃ 
-┃ 📊 *Contents*
-┃ ▫️ Session Files: ${sessionStats.totalFiles} files
-┃ ▫️ Session Folders: ${sessionStats.totalFolders} folder
-┃ ▫️ Config File: ✅ Included
-┃ ▫️ Total Data: ${formatFileSize(sessionStats.totalSize)}
-┃ ▫️ Compression: Maximum Level
-┃ 
-┃ 🔐 *Security*
-┃ ▫️ Requester: ${sensorNumber(cleanSender)}
-┃ ▫️ Bot Mode: ${config.bot.mode.toUpperCase()}
-┃ ▫️ Bot Number: ${sensorNumber(config.bot.botNumber)}
-┃ ▫️ Authorization: ✅ Verified
-┃ 
-┃ ⚠️  *PENTING:*
-┃ ▫️ File ini berisi data sensitif bot
-┃ ▫️ Simpan dengan aman dan jangan bagikan
-┃ ▫️ Gunakan untuk restore session
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-🔒 *Backup Session ZIP - Handle with Care!*`;
-
-        // Send ZIP file with improved retry mechanism
-        let zipSent = false;
-        let retryCount = 0;
-        const maxRetries = 3;
-
-        while (!zipSent && retryCount < maxRetries) {
-            try {
-                retryCount++;
-
-                // Check file size
-                const fileSizeBytes = zipInfo.size;
-                const fileSizeMB = fileSizeBytes / (1024 * 1024);
-
-                if (fileSizeMB > 100) {
-                    throw new Error(`File terlalu besar: ${fileSizeMB.toFixed(2)}MB (Maksimal 100MB)`);
-                }
-
-                // Check if file still exists
-                if (!fs.existsSync(zipInfo.path)) {
-                    throw new Error('ZIP file tidak ditemukan atau sudah terhapus');
-                }
-
-                await client.sendMessage(targetJid, {
-                    document: fs.readFileSync(zipInfo.path),
-                    fileName: zipInfo.filename,
-                    mimetype: 'application/zip',
-                    caption: zipCaption
-                }, {
-                    timeout: 180000 // 3 minutes timeout
-                });
-
-                zipSent = true;
-
-            } catch (sendError) {
-                if (retryCount >= maxRetries) {
-                    throw new Error(`Gagal mengirim ZIP setelah ${maxRetries} percobaan: ${sendError.message}`);
-                }
-
-                // Wait before retry with exponential backoff
-                const delay = Math.min(10000 * retryCount, 30000); // Max 30 seconds
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-        }
-
-        // Create success message using Wily
-        const successMessage = `╭━━━『 📦 SESSION BACKUP BERHASIL 』━━━❀
-┃ 
-┃ ✅ *ZIP Backup Berhasil Dikirim!*
-┃ 
-┃ 📅 *Informasi Waktu*
-┃ ▫️ Tanggal: ${dayName}, ${date} ${monthName} ${year}
-┃ ▫️ Waktu: ${time} WIB 🇮🇩
-┃ ▫️ Timezone: Asia/Jakarta
-┃ 
-┃ 📦 *Detail ZIP Backup*
-┃ ▫️ ZIP Size: ${formatFileSize(zipInfo.size)}
-┃ ▫️ Compression: ✅ Level 6
-┃ ▫️ Contents: Session + Config
-┃ 
-┃ 📤 *Target Backup*
-┃ ▫️ Tujuan: ${sensorNumber(targetNumber)}
-┃ ▫️ Status: Terkirim ✅
-┃ ▫️ Format: ZIP Archive 📦
-┃ 
-┃ 📊 *Statistik Session*
-┃ ▫️ Total File: ${sessionStats.totalFiles} file
-┃ ▫️ Total Folder: ${sessionStats.totalFolders} folder
-┃ ▫️ Total Size: ${formatFileSize(sessionStats.totalSize)}
-┃ ▫️ JSON Files: ${sessionStats.fileTypes['.json'] || 0}
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀
-
-🚀 *ZIP backup berhasil dikirim ke ${sensorNumber(targetNumber)}!*`;
-
-        // Send confirmation to requester using Wily
-        await Wily(successMessage, msg, client);
-
-        // Clean up temporary ZIP file after successful send
-        setTimeout(() => {
-            try {
-                if (fs.existsSync(zipInfo.path)) {
-                    fs.unlinkSync(zipInfo.path);
-                }
-            } catch (cleanupError) {
-                // Silent cleanup error
-            }
-        }, 60000); // 1 minute delay to ensure file was sent
+        await Wily(resultMessage, m, hisoka);
 
     } catch (error) {
-        const errorMessage = `╭━━━『 ❌ BACKUP SESSION GAGAL 』━━━❀
-┃ 
-┃ ❌ *Terjadi Kesalahan!*
-┃ 
-┃ 🔍 *Detail Error:*
-┃ ▫️ ${error.message || 'Unknown error'}
-┃ 
-┃ 💡 *Solusi:*
-┃ ▫️ Periksa koneksi internet
-┃ ▫️ Pastikan folder session ada
-┃ ▫️ Coba lagi dalam beberapa saat
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
-
-        try {
-            await Wily(errorMessage, msg, client);
-        } catch (replyError) {
-            // Silent error
-        }
+        await Wily(`❌ Session backup failed: ${error.message}`, m, hisoka);
     }
 }
 
-function handleBackupCommand(client, msg) {
-    const config = loadConfig();
-    if (!config) return;
-
-    const senderNumber = msg.key.participant || msg.key.remoteJid;
-
-    // Check access permission first
-    if (!checkAccess(senderNumber, config)) {
-        return; // No response for unauthorized users
-    }
-
-    const messageText = msg.message?.conversation?.toLowerCase() || 
-                       msg.message?.extendedTextMessage?.text?.toLowerCase() || '';
-
-    // Check for backup commands
-    if (messageText === '.backupsesi' || messageText === '.backup' || messageText === '.getsesi') {
-        // Clean up old temp files first
-        cleanupTempFiles();
-        sendSessionBackup(client, msg);
-    }
-
-    // Add command to manually clean temp files
-    if (messageText === '.cleantemp' || messageText === '.cleanbkp') {
-        cleanupTempFiles();
-
-        const cleanupMsg = `╭━━━『 🧹 CLEANUP TEMP FILES 』━━━❀
-┃ 
-┃ ✅ *Pembersihan Berhasil!*
-┃ 
-┃ 📂 *Target:* ./temp/*.zip
-┃ 🗑️ *Status:* File temporary dibersihkan
-┃ 
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━❀`;
-
-        Wily(cleanupMsg, msg, client);
-    }
-}
-
-module.exports = {
-    sendSessionBackup,
-    handleBackupCommand
-};
+export { handleBackupSesiCommand };
+export const backupsesi = handleBackupSesiCommand;
