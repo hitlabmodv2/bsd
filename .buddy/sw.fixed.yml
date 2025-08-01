@@ -1,0 +1,6 @@
+- pipeline: sw
+  refs:
+  - refs/heads/bds
+  events:
+  - type: PUSH
+  fail_on_prepare_env_warning: true
