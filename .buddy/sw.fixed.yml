@@ -3,7 +3,12 @@
   - :default
   events:
   - type: PUSH
+  no_skip_to_most_recent: true
+  cache_scope: WORKSPACE
   fail_on_prepare_env_warning: true
+  concurrent_pipeline_runs: true
+  resources: X2LARGE
+  arch: ARM64
   actions:
   - action: npm start
     type: BUILD
